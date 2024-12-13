@@ -1,4 +1,5 @@
 import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion, MQTTProtocolVersion
 
 
 # The callback for when the client receives a CONNACK response from the server.
@@ -12,7 +13,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 def on_message(client, userdata, msg):
     print(msg.topic+" "+str(msg.payload))
 
-mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTProtocolVersion.MQTTv5 )
+mqttc = mqtt.Client(CallbackAPIVersion.VERSION2, protocol=MQTTProtocolVersion.MQTTv5 )
 mqttc.on_connect = on_connect
 mqttc.on_message = on_message
 
