@@ -1,3 +1,4 @@
+use anyhow::Context;
 use log::{debug, error, trace, warn}; // Add logging
 use std::{collections::HashMap, fmt};
 
@@ -255,12 +256,12 @@ impl DisconnectPacket {
         }
     }
 
-    /// Serialize the DisconnectPacket into bytes.
+    /// Serialize the `DisconnectPacket` into bytes.
     /// This attempts to respect MQTT property size constraints and will omit properties that don't fit.
     ///
     /// # Errors
-    /// Returns an error if remaining length exceeds MAX_ALLOWED_LENGTH.
-    pub fn to_bytes(self) -> anyhow::Result<Vec<u8>> {
+    /// Returns an error if remaining length exceeds `MAX_ALLOWED_LENGTH`.
+    pub fn serialize(self) -> anyhow::Result<Vec<u8>> {
         trace!("Serializing DisconnectPacket with reason_code = {}", self.reason_code);
 
         // Check if we have any properties at all
@@ -366,11 +367,17 @@ impl DisconnectPacket {
             }
         }
 
-        // Fixed header + Reason code + Property length + Properties
+        // According to MQTT spec, variable byte ints should have at most 4 bytes
+        let remaining_length = u32::try_from(remaining_length)
+            .context("Failed to cast remaining length len to u32")?;
+        let properties_length =
+            u32::try_from(properties.len()).context("Failed to cast properties length to u32")?;
+
+        // Build packet: Fixed header + Reason code + Property length + Properties
         let mut packet = Vec::new();
-        packet.extend(self.create_fixed_header(remaining_length as u32));
+        packet.extend(self.create_fixed_header(remaining_length));
         packet.push(self.reason_code as u8);
-        packet.extend(protocol::encode_variable_byte_int(properties.len() as u32));
+        packet.extend(protocol::encode_variable_byte_int(properties_length));
         packet.extend(properties);
 
         Ok(packet)

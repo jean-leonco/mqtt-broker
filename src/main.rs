@@ -202,7 +202,7 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
                 None,
                 None,
             )
-            .to_bytes()
+            .serialize()
             .context("Failed to encode DISCONNECT packet")?;
 
             info!("Sending DISCONNECT packet (NotAuthorized) to the client.");
