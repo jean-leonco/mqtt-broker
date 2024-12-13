@@ -10,6 +10,7 @@ const SERVER_REFERENCE_IDENTIFIER: u8 = 0x1C;
 
 /// Represents the Reason Codes sent when disconnecting from an MQTT connection.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum DisconnectReasonCode {
     /// Close the connection normally. Do not send the Will Message.
     /// Sent by: Client or Server.
@@ -47,7 +48,7 @@ pub(crate) enum DisconnectReasonCode {
     /// Sent by: Server.
     ServerShuttingDown = 0x8B,
 
-    /// The Connection is closed because no packet has been received for 1.5 times the Keepalive time.
+    /// The Connection is closed because no packet has been received for 1.5 times the Keep alive time.
     /// Sent by: Server.
     KeepAliveTimeout = 0x8D,
 
@@ -243,12 +244,11 @@ impl DisconnectPacket {
                 header
             }
             remaining_length => {
-                let enconded_remaining_length =
-                    protocol::encode_variable_byte_int(remaining_length);
-                let mut header = vec![0; 1 + enconded_remaining_length.len()];
+                let encoded_remaining_length = protocol::encode_variable_byte_int(remaining_length);
+                let mut header = vec![0; 1 + encoded_remaining_length.len()];
 
                 header[0] = protocol::DISCONNECT << 4; // shift code to left (most significant bits)
-                header.extend(enconded_remaining_length);
+                header.extend(encoded_remaining_length);
 
                 header
             }

@@ -8,23 +8,34 @@ pub(crate) mod packets;
 pub(crate) mod protocol;
 
 use anyhow::{Context, Ok};
+use log::{debug, error, info, trace, warn};
 use packets::disconnect_packet;
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let listener = TcpListener::bind("127.0.0.1:1883").context("Failed to bind 1883 port")?;
+    info!("Starting MQTT broker on 127.0.0.1:1883...");
+    let listener = TcpListener::bind("127.0.0.1:1883").context("Failed to bind on port 1883")?;
+    info!("Broker is listening on 127.0.0.1:1883.");
 
     loop {
-        let (stream, addr) = listener.accept().context("Failed to accept connection")?;
-        println!("\nClient connected: {addr}");
+        let (stream, addr) = listener.accept().context("Failed to accept incoming connection")?;
+        info!("Client connected: {}", addr);
 
-        handle_connection(stream)?;
+        // Handle the client connection in a separate function for clarity.
+        if let Err(e) = handle_connection(stream) {
+            error!("Error handling connection from {}: {:?}", addr, e);
+        }
     }
 }
 
-// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901019
+/// Handle a single MQTT client connection.
+///
+/// # Errors
+/// Returns an error if the packet is malformed or processing fails.
 fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
+    trace!("Starting to handle new client connection.");
+
     // MQTT protocol operates by exchanging control packets
     // The packet is composed by:
     // - Fixed header (1 byte) containing:
@@ -37,105 +48,120 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
     // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
     let mut fixed_header = [0; 1];
     stream.read_exact(&mut fixed_header).context("Failed to read fixed header")?;
-
     let packet_type = fixed_header[0] >> 4;
+
+    debug!("Received packet_type: {packet_type}");
+
     match packet_type {
         protocol::CONNECT => {
             // https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901033
+            // TODO: The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection
+
+            debug!("Handling CONNECT packet.");
 
             let remaining_length = protocol::decode_variable_byte_int(&mut stream)
-                .context("Failed to remaining length")?;
+                .context("Failed to decode remaining length")?;
+            debug!("CONNECT packet remaining_length: {}", remaining_length);
 
             if remaining_length > protocol::MAX_ALLOWED_LENGTH {
+                warn!(
+                    "CONNECT packet too large: {} > {}",
+                    remaining_length,
+                    protocol::MAX_ALLOWED_LENGTH
+                );
                 return Err(anyhow::anyhow!("Packet too large"));
             }
 
-            // Read rest of the packet
             let mut rest = vec![0; remaining_length];
             stream.read_exact(&mut rest).context("Failed to read variable header and payload")?;
             let mut rest_buf = Cursor::new(rest);
 
-            // After a Network Connection is established by a Client to a Server, the first packet sent from the Client to the Server MUST be a CONNECT packet
-            // TODO: The Server MUST process a second CONNECT packet sent from a Client as a Protocol Error and close the Network Connection
-
-            // The Variable Header for the CONNECT Packet contains the following fields in this order: Protocol Name, Protocol Level, Connect Flags, Keep Alive, and Properties
+            // Decode Protocol Name length
             let mut protocol_name_length = [0; 2];
-            rest_buf.read_exact(&mut protocol_name_length)?;
+            rest_buf
+                .read_exact(&mut protocol_name_length)
+                .context("Failed to read protocol name length")?;
             let protocol_name_length = u16::from_be_bytes(protocol_name_length);
             if protocol_name_length != 4 {
+                warn!("Unexpected protocol name length: {}", protocol_name_length);
                 return Err(anyhow::anyhow!("Unsupported Protocol Version"));
             }
 
             // The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”
             let mut protocol_name = [0; 4];
-            rest_buf.read_exact(&mut protocol_name)?;
-            if str::from_utf8(&protocol_name)? != "MQTT" {
+            rest_buf.read_exact(&mut protocol_name).context("Failed to read protocol name")?;
+            let protocol_name =
+                str::from_utf8(&protocol_name).context("Protocol name is not valid UTF-8")?;
+
+            if protocol_name != "MQTT" {
+                warn!("Unsupported protocol name: {}", protocol_name);
                 return Err(anyhow::anyhow!("Unsupported Protocol Version"));
             }
+            debug!("Protocol name: {}", protocol_name);
 
             // The value of the Protocol Version field for version 5.0 of the protocol is 5 (0x05)
             let mut protocol_level = [0; 1];
-            rest_buf.read_exact(&mut protocol_level)?;
+            rest_buf.read_exact(&mut protocol_level).context("Failed to read protocol level")?;
             let protocol_level = u8::from_be_bytes(protocol_level);
             if protocol_level != 5 {
+                warn!("Unsupported protocol level: {}", protocol_level);
                 return Err(anyhow::anyhow!("Unsupported Protocol Version"));
             }
+            debug!("Protocol level: {}", protocol_level);
 
             // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
             // https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901038
             let mut connect_flags_buf = [0; 1];
-            rest_buf.read_exact(&mut connect_flags_buf)?;
+            rest_buf.read_exact(&mut connect_flags_buf).context("Failed to read connect flags")?;
             let connect_flags = connect_flags_buf[0];
 
             // The Server MUST validate that the reserved flag in the CONNECT packet is set to 0
             if connect_flags & 1 != 0 {
+                warn!("Malformed packet: reserved flag set in CONNECT packet.");
                 return Err(anyhow::anyhow!("Malformed packet"));
-            };
+            }
 
             // If the username flag is set to 0, a username must not be present in the payload. Otherwise, a username must be present in the payload.
             let username_flag = (connect_flags >> 7) & 1 == 1;
 
             // If the password flag is set to 0, a password must not be present in the payload. Otherwise, a password must be present in the payload.
             let password_flag = (connect_flags >> 6) & 1 == 1;
-
             // If the Will Flag is set to 1 and Will Retain is set to 0, the Server MUST publish the Will Message as a non-retained message.
             // If the Will Flag is set to 1 and Will Retain is set to 1, the Server MUST publish the Will Message as a retained message.
             let will_retain = (connect_flags >> 5) & 1 == 1;
             let will_flag = (connect_flags >> 2) & 1 == 1;
 
-            // If the Will Flag is set to 0, then Will Retain MUST be set to 0.
-            if !will_flag && will_retain {
-                return Err(anyhow::anyhow!("Malformed packet"));
-            }
-
             // These two bits specify the QoS level to be used when publishing the Will Message.
             let will_qos = (connect_flags >> 3) & 0b0000_0011;
 
-            // If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00).
-            if (!will_flag && will_qos != 0) || will_qos > 2 {
+            let clean_start = (connect_flags >> 1) & 1 == 1;
+
+            // If the Will Flag is set to 0, then Will Retain MUST be set to 0.
+            if !will_flag && will_retain {
+                warn!("Malformed packet: will_flag is 0 but will_retain is set.");
                 return Err(anyhow::anyhow!("Malformed packet"));
             }
 
-            let clear_start = (connect_flags >> 1) & 1 == 1;
+            // If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00).
+            if (!will_flag && will_qos != 0) || will_qos > 2 {
+                warn!("Malformed packet: Invalid will_qos when will_flag is disabled or QoS out of range.");
+                return Err(anyhow::anyhow!("Malformed packet"));
+            }
 
-            // The Keep Alive is a Two Byte Integer which is a time interval measured in seconds. It is the maximum time interval that is permitted to elapse between the point at which the Client finishes transmitting one MQTT Control Packet and the point it starts sending the next. It is the responsibility of the Client to ensure that the interval between MQTT Control Packets being sent does not exceed the Keep Alive value. If Keep Alive is non-zero and in the absence of sending any other MQTT Control Packets, the Client MUST send a PINGREQ packet.
-            let mut keep_alive_buf = [0; 2];
-            rest_buf.read_exact(&mut keep_alive_buf)?;
-            let keep_alive = u16::from_be_bytes(keep_alive_buf);
-
-            println!(
-                "username_flag: {username_flag}
-password_flag: {password_flag}
-will_retain: {will_retain}
-will_qos: {will_qos}
-will_flag: {will_flag}
-clear_start: {clear_start}
-keep_alive: {keep_alive}"
+            debug!("Connect flags: username_flag={}, password_flag={}, will_retain={}, will_qos={}, will_flag={}, clean_start={}",
+                username_flag, password_flag, will_retain, will_qos, will_flag, clean_start
             );
 
+            // The Keep Alive is a Two Byte Integer which is a time interval measured in seconds. It is the maximum time interval that is permitted to elapse between the point at which the Client finishes transmitting one MQTT Control Packet and the point it starts sending the next. It is the responsibility of the Client to ensure that the interval between MQTT Control Packets being sent does not exceed the Keep Alive value. If Keep Alive is non-zero and in the absence of sending any other MQTT Control Packets, the Client MUST send a PINGREQ packet.
+            let mut keep_alive = [0; 2];
+            rest_buf.read_exact(&mut keep_alive).context("Failed to read keep alive")?;
+            let keep_alive = u16::from_be_bytes(keep_alive);
+            debug!("Keep alive: {}", keep_alive);
+
             // TODO: Decode properties
-            let properties_length = protocol::decode_variable_byte_int(&mut rest_buf)?;
-            println!("properties_length: {properties_length}");
+            let properties_length = protocol::decode_variable_byte_int(&mut rest_buf)
+                .context("Failed to decode properties length")?;
+            debug!("properties_length: {}", properties_length);
 
             // The Payload of the CONNECT packet contains one or more length-prefixed fields, whose presence is determined by the flags in the Variable Header. These fields, if present, MUST appear in the order Client Identifier, Will Properties, Will Topic, Will Payload, User Name, Password.
 
@@ -154,39 +180,45 @@ keep_alive: {keep_alive}"
 
             // protocol_name_length + protocol_name + protocol_level + connect_flags + keep_alive
             let variable_header_length = 2 + 4 + 1 + 1 + 2 + properties_length;
-            let mut buf = Vec::with_capacity(remaining_length - variable_header_length);
-            rest_buf.read_to_end(&mut buf)?;
-            println!(
-                "payload: {}
-expected_client_id: {}
-expected_username: {}
-expected_password: {}
-expected_client_id_length: {}",
-                hex::encode(buf),
-                hex::encode("clientIdW7T3SRR5d3"),
-                hex::encode("123"),
-                hex::encode("123123"),
-                "clientIdW7T3SRR5d3".len(),
-            );
+            let payload_length = remaining_length - variable_header_length;
+
+            // Reserve capacity for the payload vector
+            let mut buf = Vec::with_capacity(payload_length);
+            rest_buf.read_to_end(&mut buf).context("Failed to read payload")?;
+
+            trace!("Raw payload (hex): {}", hex::encode(&buf));
+            debug!("Payload length: {}", payload_length);
+            debug!("Expected client_id: {}", hex::encode("clientIdW7T3SRR5d3"));
+            debug!("Expected client_id_length: {}", "clientIdW7T3SRR5d3".len());
+            debug!("Expected username: {}", hex::encode("123"));
+            debug!("Expected password: {}", hex::encode("123123"));
 
             let response = disconnect_packet::DisconnectPacket::new(
                 disconnect_packet::DisconnectReasonCode::NotAuthorized,
                 None,
-                Some(String::from("Client is not authorized to perform this action. Please verify credentials or permissions.")),
+                Some(String::from(
+                    "Client is not authorized to perform this action. Please verify credentials.",
+                )),
                 None,
                 None,
             )
             .to_bytes()
-            .context("Failed to encode packet")?;
+            .context("Failed to encode DISCONNECT packet")?;
 
-            stream.write_all(&response).context("Failed to write response")?;
+            info!("Sending DISCONNECT packet (NotAuthorized) to the client.");
+            stream.write_all(&response).context("Failed to write DISCONNECT packet")?;
         }
-        // TODO: Send the error to the client
-        protocol::CONNACK..protocol::AUTH => {
+        protocol::CONNACK..=protocol::AUTH => {
+            warn!("Received packet type {} which is not yet implemented.", packet_type);
             anyhow::bail!("Packet type {} not implemented", packet_type)
         }
-        packet_type => anyhow::bail!("Packet type {} invalid", packet_type),
+        _ => {
+            // Packet types outside expected range
+            error!("Invalid packet type {} received.", packet_type);
+            anyhow::bail!("Packet type {} invalid", packet_type)
+        }
     }
 
+    info!("Connection handled successfully.");
     Ok(())
 }

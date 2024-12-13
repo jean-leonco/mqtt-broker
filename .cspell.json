@@ -1,0 +1,16 @@
+{
+  "words": [
+    "connack",
+    "mqtt",
+    "pingreq",
+    "pingresp",
+    "puback",
+    "pubcomp",
+    "pubrec",
+    "pubrel",
+    "suback",
+    "unsuback"
+  ],
+  "useGitignore": true,
+  "ignorePaths": ["./*.lock"]
+}
