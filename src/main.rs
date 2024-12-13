@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         let (stream, addr) = listener.accept().context("Failed to accept connection")?;
-        println!("\nClient connected: {}", addr);
+        println!("\nClient connected: {addr}");
 
         handle_connection(stream)?;
     }

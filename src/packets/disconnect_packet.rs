@@ -53,7 +53,7 @@ pub(crate) enum DisconnectReasonCode {
     /// Sent by: Server.
     KeepAliveTimeout = 0x8D,
 
-    /// Another Connection using the same ClientID has connected causing this Connection to be closed.
+    /// Another Connection using the same `ClientID` has connected causing this Connection to be closed.
     /// Sent by: Server.
     SessionTakenOver = 0x8E,
 
@@ -97,7 +97,7 @@ pub(crate) enum DisconnectReasonCode {
     /// Sent by: Server.
     RetainNotSupported = 0x9A,
 
-    /// The Client specified a QoS greater than the QoS specified in a Maximum QoS in the CONNACK.
+    /// The Client specified a `QoS` greater than the `QoS` specified in a Maximum `QoS` in the CONNACK.
     /// Sent by: Server.
     QoSNotSupported = 0x9B,
 
