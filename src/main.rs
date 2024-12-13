@@ -11,6 +11,8 @@ use anyhow::{Context, Ok};
 use packets::disconnect_packet;
 
 fn main() -> anyhow::Result<()> {
+    env_logger::init();
+
     let listener = TcpListener::bind("127.0.0.1:1883").context("Failed to bind 1883 port")?;
 
     loop {
