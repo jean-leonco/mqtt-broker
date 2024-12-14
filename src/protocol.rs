@@ -19,10 +19,17 @@ pub(crate) const CONNACK: u8 = 2;
 pub(crate) const DISCONNECT: u8 = 14;
 pub(crate) const AUTH: u8 = 15;
 
-// Validate the size against the MQTT maximum allowed value
+// TODO: There should be 2 consts: one for maximum packet size and other for maximum remaining length.
+// The maximum packet size is the total number of bytes in an MQTT Control Packet: fixed header size + remaining length size.
+// The maximum remaining length is the total number of bytes in an MQTT Control Packet after the fixed header: variable header + payload.
+/// Validate the size against the MQTT maximum allowed value
 pub(crate) const MAX_ALLOWED_LENGTH: usize = 268_435_455;
 
-/// Decode a variable byte integer. See <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
+pub(crate) const MAX_STRING_SIZE: usize = 65_535;
+
+/// Decode a variable byte integer.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
 ///
 /// Spec implementation:
 /// ```text
@@ -70,7 +77,9 @@ pub(crate) fn decode_variable_byte_int(stream: &mut impl Read) -> anyhow::Result
     Ok(decoded_value)
 }
 
-/// Encode a variable byte integer. Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
+/// Encode a variable byte integer.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
 ///
 /// Spec implementation:
 /// ```text
@@ -114,4 +123,60 @@ pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
     }
 
     encoded_value
+}
+
+/// Decode a UTF-8 string.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
+///
+/// # Errors
+/// - Returns an error if:
+///   - Reading the length bytes or string bytes fails.
+///   - The string bytes cannot be converted into a valid UTF-8 `String`.
+pub(crate) fn decode_utf8_string(stream: &mut impl Read) -> anyhow::Result<String> {
+    // Read the 2-byte length prefix, representing the string's length in big-endian format
+    let mut encoded_len = [0; 2];
+    stream.read_exact(&mut encoded_len).context("Failed to read 2-byte length from stream")?;
+    let len = u16::from_be_bytes(encoded_len) as usize;
+
+    // Allocate a buffer with the exact size needed for the string
+    let mut encoded_value = vec![0; len];
+    stream.read_exact(&mut encoded_value).with_context(|| {
+        format!("Failed to read {len} bytes of UTF-8 encoded string from the stream")
+    })?;
+
+    // Convert the UTF-8 bytes into a String
+    let decoded_value = String::from_utf8(encoded_value)
+        .context("Failed to convert encoded_value into a String")?;
+
+    Ok(decoded_value)
+}
+
+/// Encode a UTF-8 string.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
+///
+/// # Errors
+/// - Returns an error if the string's length cannot be cast to a 16-bit integer.
+pub(crate) fn encode_utf8_string(value: &str) -> anyhow::Result<Vec<u8>> {
+    // MQTT requires that the length of the string must fit within 2 bytes (0 to 65_535).
+    let len = value.len();
+    let casted_len = u16::try_from(len).with_context(|| {
+        format!(
+            "Expected value {value} length ({len}) to be less than or equal to {MAX_STRING_SIZE}",
+        )
+    })?;
+
+    // Preallocate a buffer with sufficient capacity:
+    // - 2 bytes for the length field
+    // - `len` bytes for the UTF-8 encoded string
+    let mut encoded_value = Vec::with_capacity(2 + len);
+
+    // Big-endian ensures compatibility with the MQTT specification
+    encoded_value.extend(casted_len.to_be_bytes());
+
+    // Append the UTF-8 encoded bytes of the string to the buffer
+    encoded_value.extend(value.as_bytes());
+
+    Ok(encoded_value)
 }

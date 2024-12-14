@@ -1,6 +1,9 @@
 use anyhow::Context;
-use log::{debug, error, trace, warn}; // Add logging
-use std::{collections::HashMap, fmt};
+use log::{debug, trace, warn};
+use std::{
+    collections::HashMap,
+    fmt::{self},
+};
 
 use crate::protocol;
 
@@ -198,23 +201,36 @@ pub(crate) struct DisconnectPacket {
 }
 
 impl DisconnectPacket {
-    /// Create a new `DisconnectPacket`.
-    /// If `server_reference` is present, the `reason_code` must be `UseAnotherServer` or `ServerMoved`.
-    /// Otherwise, it is considered a logic error.
+    /// Creates a `DisconnectPacket` with the provided parameters, while ensuring that the values comply with the MQTT protocol requirements.
+    ///
+    /// # Errors
+    /// - Returns an error if:
+    ///   - `server_reference` is present, but its length exceeds `protocol::MAX_STRING_SIZE`.
+    ///   - `server_reference` is present, but `reason_code` is not `UseAnotherServer` or `ServerMoved`.
+    ///   - `reason_string` is provided, but its length exceeds `protocol::MAX_STRING_SIZE`.
     pub fn new(
         reason_code: DisconnectReasonCode,
         session_expiry_interval: Option<u32>,
         reason_string: Option<String>,
         user_properties: Option<HashMap<String, String>>,
         server_reference: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         if let Some(ref server_reference) = server_reference {
+            let server_reference_len = server_reference.len();
+            if server_reference_len > protocol::MAX_STRING_SIZE {
+                anyhow::bail!(
+                    "Expected server_reference {} len to be less than MAX_STRING_SIZE ({} > {})",
+                    server_reference,
+                    server_reference_len,
+                    protocol::MAX_STRING_SIZE
+                )
+            }
+
             if !(matches!(
                 reason_code,
                 DisconnectReasonCode::UseAnotherServer | DisconnectReasonCode::ServerMoved
             )) {
-                warn!("Server reference '{server_reference}' provided but reason_code is {reason_code}, expected UseAnotherServer or ServerMoved.");
-                unreachable!(
+                anyhow::bail!(
                     "Expected reason_code to be {} or {}. Got {reason_code}",
                     DisconnectReasonCode::UseAnotherServer,
                     DisconnectReasonCode::ServerMoved
@@ -222,13 +238,27 @@ impl DisconnectPacket {
             }
         }
 
-        Self {
+        if let Some(ref reason_string) = reason_string {
+            let reason_string_len = reason_string.len();
+            if reason_string_len > protocol::MAX_STRING_SIZE {
+                anyhow::bail!(
+                    "Expected reason_string {} len to be less than MAX_STRING_SIZE ({} > {})",
+                    reason_string,
+                    reason_string_len,
+                    protocol::MAX_STRING_SIZE
+                )
+            }
+        }
+
+        // TODO: Validate user_properties size
+
+        Ok(Self {
             reason_code,
             session_expiry_interval,
             reason_string,
             user_properties,
             server_reference,
-        }
+        })
     }
 
     /// Create the fixed header for the DISCONNECT packet.
@@ -245,23 +275,23 @@ impl DisconnectPacket {
                 header
             }
             remaining_length => {
-                let encoded_remaining_length = protocol::encode_variable_byte_int(remaining_length);
-                let mut header = vec![0; 1 + encoded_remaining_length.len()];
+                let encoded_remaining_len = protocol::encode_variable_byte_int(remaining_length);
+                let mut header = vec![0; 1 + encoded_remaining_len.len()];
 
                 header[0] = protocol::DISCONNECT << 4; // shift code to left (most significant bits)
-                header.extend(encoded_remaining_length);
+                header.extend(encoded_remaining_len);
 
                 header
             }
         }
     }
 
-    /// Serialize the `DisconnectPacket` into bytes.
+    /// Encode the `DisconnectPacket` into bytes.
     /// This attempts to respect MQTT property size constraints and will omit properties that don't fit.
     ///
     /// # Errors
-    /// Returns an error if remaining length exceeds `MAX_ALLOWED_LENGTH`.
-    pub fn serialize(self) -> anyhow::Result<Vec<u8>> {
+    /// Returns an error if remaining length or packet size exceeds `MAX_ALLOWED_LENGTH`.
+    pub fn encode(self) -> anyhow::Result<Vec<u8>> {
         trace!("Serializing DisconnectPacket with reason_code = {}", self.reason_code);
 
         // Check if we have any properties at all
@@ -274,7 +304,6 @@ impl DisconnectPacket {
         if matches!(self.reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties
         {
             debug!("NormalDisconnection with no properties: sending minimal packet");
-            // remaining_length = 0
             return Ok(self.create_fixed_header(0));
         }
 
@@ -292,12 +321,14 @@ impl DisconnectPacket {
 
         // Add Server Reference if present
         if let Some(server_reference) = &self.server_reference {
-            let bytes = server_reference.as_bytes();
-            let len = 1 + bytes.len();
+            let len = 1 + server_reference.len();
 
             if remaining_length + len <= protocol::MAX_ALLOWED_LENGTH {
                 properties.push(SERVER_REFERENCE_IDENTIFIER);
-                properties.extend(bytes);
+                properties.extend(
+                    protocol::encode_utf8_string(server_reference)
+                        .context("Failed to encode server_reference")?,
+                );
 
                 remaining_length += len;
             } else {
@@ -309,27 +340,17 @@ impl DisconnectPacket {
             }
         }
 
-        // Ensure the variable header isn't larger than the MAX_ALLOWED_LENGTH
-        if remaining_length > protocol::MAX_ALLOWED_LENGTH {
-            error!(
-            "Remaining length exceeds the maximum allowed value. Remaining length: {}, Maximum allowed: {}",
-            remaining_length, protocol::MAX_ALLOWED_LENGTH
-        );
-            anyhow::bail!(
-            "Remaining length exceeds the maximum allowed value. Remaining length: {}, Maximum allowed: {}",
-            remaining_length, protocol::MAX_ALLOWED_LENGTH
-        );
-        }
-
         // Add Reason String if present
         if let Some(reason_string) = &self.reason_string {
-            let bytes = reason_string.as_bytes();
-            let len = 1 + bytes.len();
+            let len = 1 + reason_string.len();
 
             // The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
             if remaining_length + len <= protocol::MAX_ALLOWED_LENGTH {
                 properties.push(REASON_STRING_IDENTIFIER);
-                properties.extend(bytes);
+                properties.extend(
+                    protocol::encode_utf8_string(reason_string)
+                        .context("Failed to encode reason_string")?,
+                );
 
                 remaining_length += len;
             } else {
@@ -345,15 +366,24 @@ impl DisconnectPacket {
         if let Some(user_properties) = &self.user_properties {
             let mut user_property = Vec::new();
 
-            // Each user property:
-            // - 1 byte for identifier
-            // - variable length for "name:value" string
+            // Encode properties as UTF-8 String Pair composed by:
+            // - 2-byte name length
+            // - property name bytes
+            // - 2-byte value length
+            // - property value bytes
             for (name, value) in user_properties {
                 user_property.push(USER_PROPERTY_IDENTIFIER);
-                user_property.extend(format!("{name}:{value}").as_bytes());
+                user_property.extend(
+                    protocol::encode_utf8_string(name)
+                        .with_context(|| format!("Failed to encode user_property name {name}"))?,
+                );
+                user_property
+                    .extend(protocol::encode_utf8_string(value).with_context(|| {
+                        format!("Failed to encode user_property value {value}")
+                    })?);
             }
 
-            // The sender MUST NOT send this property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
+            // The sender MUST NOT send this property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver
             if user_property.len() <= protocol::MAX_ALLOWED_LENGTH {
                 remaining_length += user_property.len();
 
@@ -379,6 +409,14 @@ impl DisconnectPacket {
         packet.push(self.reason_code as u8);
         packet.extend(protocol::encode_variable_byte_int(properties_length));
         packet.extend(properties);
+
+        // Ensure the packet isn't larger than the MAX_ALLOWED_LENGTH
+        if packet.len() > protocol::MAX_ALLOWED_LENGTH {
+            anyhow::bail!(
+            "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
+            packet.len(), protocol::MAX_ALLOWED_LENGTH
+        );
+        }
 
         Ok(packet)
     }

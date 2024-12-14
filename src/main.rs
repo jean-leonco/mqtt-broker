@@ -202,7 +202,8 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
                 None,
                 None,
             )
-            .serialize()
+            .context("Failed to create DISCONNECT packet")?
+            .encode()
             .context("Failed to encode DISCONNECT packet")?;
 
             info!("Sending DISCONNECT packet (NotAuthorized) to the client.");
@@ -214,7 +215,6 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
         }
         _ => {
             // Packet types outside expected range
-            error!("Invalid packet type {} received.", packet_type);
             anyhow::bail!("Packet type {} invalid", packet_type)
         }
     }
