@@ -1,11 +1,8 @@
 use anyhow::Context;
-use log::{debug, trace, warn};
-use std::{
-    collections::HashMap,
-    fmt::{self},
-};
+use log::{debug, trace};
+use std::{collections::HashMap, fmt};
 
-use crate::protocol;
+use crate::protocol::{self, PacketType};
 
 const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
@@ -13,7 +10,7 @@ const USER_PROPERTY_IDENTIFIER: u8 = 0x26;
 const SERVER_REFERENCE_IDENTIFIER: u8 = 0x1C;
 
 /// Represents the Reason Codes sent when disconnecting from an MQTT connection.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) enum DisconnectReasonCode {
     /// Close the connection normally. Do not send the Will Message.
@@ -133,44 +130,45 @@ pub(crate) enum DisconnectReasonCode {
     WildcardSubscriptionsNotSupported = 0xA2,
 }
 
+impl DisconnectReasonCode {
+    /// Converts the `DisconnectReasonCode` to its numeric value.
+    pub fn to_u8(&self) -> u8 {
+        *self as u8
+    }
+}
+
 impl fmt::Display for DisconnectReasonCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            DisconnectReasonCode::NormalDisconnection => "NormalDisconnection",
-            DisconnectReasonCode::DisconnectWithWillMessage => "DisconnectWithWillMessage",
-            DisconnectReasonCode::UnspecifiedError => "UnspecifiedError",
-            DisconnectReasonCode::MalformedPacket => "MalformedPacket",
-            DisconnectReasonCode::ProtocolError => "ProtocolError",
-            DisconnectReasonCode::ImplementationSpecificError => "ImplementationSpecificError",
-            DisconnectReasonCode::NotAuthorized => "NotAuthorized",
-            DisconnectReasonCode::ServerBusy => "ServerBusy",
-            DisconnectReasonCode::ServerShuttingDown => "ServerShuttingDown",
-            DisconnectReasonCode::KeepAliveTimeout => "KeepAliveTimeout",
-            DisconnectReasonCode::SessionTakenOver => "SessionTakenOver",
-            DisconnectReasonCode::TopicFilterInvalid => "TopicFilterInvalid",
-            DisconnectReasonCode::TopicNameInvalid => "TopicNameInvalid",
-            DisconnectReasonCode::ReceiveMaximumExceeded => "ReceiveMaximumExceeded",
-            DisconnectReasonCode::TopicAliasInvalid => "TopicAliasInvalid",
-            DisconnectReasonCode::PacketTooLarge => "PacketTooLarge",
-            DisconnectReasonCode::MessageRateTooHigh => "MessageRateTooHigh",
-            DisconnectReasonCode::QuotaExceeded => "QuotaExceeded",
-            DisconnectReasonCode::AdministrativeAction => "AdministrativeAction",
-            DisconnectReasonCode::PayloadFormatInvalid => "PayloadFormatInvalid",
-            DisconnectReasonCode::RetainNotSupported => "RetainNotSupported",
-            DisconnectReasonCode::QoSNotSupported => "QoSNotSupported",
-            DisconnectReasonCode::UseAnotherServer => "UseAnotherServer",
-            DisconnectReasonCode::ServerMoved => "ServerMoved",
-            DisconnectReasonCode::SharedSubscriptionsNotSupported => {
-                "SharedSubscriptionsNotSupported"
-            }
-            DisconnectReasonCode::ConnectionRateExceeded => "ConnectionRateExceeded",
-            DisconnectReasonCode::MaximumConnectTime => "MaximumConnectTime",
-            DisconnectReasonCode::SubscriptionIdentifiersNotSupported => {
-                "SubscriptionIdentifiersNotSupported"
-            }
-            DisconnectReasonCode::WildcardSubscriptionsNotSupported => {
-                "WildcardSubscriptionsNotSupported"
-            }
+            Self::NormalDisconnection => "NormalDisconnection",
+            Self::DisconnectWithWillMessage => "DisconnectWithWillMessage",
+            Self::UnspecifiedError => "UnspecifiedError",
+            Self::MalformedPacket => "MalformedPacket",
+            Self::ProtocolError => "ProtocolError",
+            Self::ImplementationSpecificError => "ImplementationSpecificError",
+            Self::NotAuthorized => "NotAuthorized",
+            Self::ServerBusy => "ServerBusy",
+            Self::ServerShuttingDown => "ServerShuttingDown",
+            Self::KeepAliveTimeout => "KeepAliveTimeout",
+            Self::SessionTakenOver => "SessionTakenOver",
+            Self::TopicFilterInvalid => "TopicFilterInvalid",
+            Self::TopicNameInvalid => "TopicNameInvalid",
+            Self::ReceiveMaximumExceeded => "ReceiveMaximumExceeded",
+            Self::TopicAliasInvalid => "TopicAliasInvalid",
+            Self::PacketTooLarge => "PacketTooLarge",
+            Self::MessageRateTooHigh => "MessageRateTooHigh",
+            Self::QuotaExceeded => "QuotaExceeded",
+            Self::AdministrativeAction => "AdministrativeAction",
+            Self::PayloadFormatInvalid => "PayloadFormatInvalid",
+            Self::RetainNotSupported => "RetainNotSupported",
+            Self::QoSNotSupported => "QoSNotSupported",
+            Self::UseAnotherServer => "UseAnotherServer",
+            Self::ServerMoved => "ServerMoved",
+            Self::SharedSubscriptionsNotSupported => "SharedSubscriptionsNotSupported",
+            Self::ConnectionRateExceeded => "ConnectionRateExceeded",
+            Self::MaximumConnectTime => "MaximumConnectTime",
+            Self::SubscriptionIdentifiersNotSupported => "SubscriptionIdentifiersNotSupported",
+            Self::WildcardSubscriptionsNotSupported => "WildcardSubscriptionsNotSupported",
         };
         write!(f, "{value}")
     }
@@ -198,6 +196,8 @@ pub(crate) struct DisconnectPacket {
 
     /// Encoded String which can be used by the Client to identify another Server to use.
     server_reference: Option<String>,
+
+    remaining_len: usize,
 }
 
 impl DisconnectPacket {
@@ -205,9 +205,9 @@ impl DisconnectPacket {
     ///
     /// # Errors
     /// - Returns an error if:
-    ///   - `server_reference` is present, but its length exceeds `protocol::MAX_STRING_SIZE`.
+    ///   - `server_reference` is present, but its length exceeds `protocol::MAX_STRING_LENGTH`.
     ///   - `server_reference` is present, but `reason_code` is not `UseAnotherServer` or `ServerMoved`.
-    ///   - `reason_string` is provided, but its length exceeds `protocol::MAX_STRING_SIZE`.
+    ///   - `reason_string` is provided, but its length exceeds `protocol::MAX_STRING_LENGTH`.
     pub fn new(
         reason_code: DisconnectReasonCode,
         session_expiry_interval: Option<u32>,
@@ -217,12 +217,12 @@ impl DisconnectPacket {
     ) -> anyhow::Result<Self> {
         if let Some(ref server_reference) = server_reference {
             let server_reference_len = server_reference.len();
-            if server_reference_len > protocol::MAX_STRING_SIZE {
+            if server_reference_len > protocol::MAX_STRING_LENGTH {
                 anyhow::bail!(
-                    "Expected server_reference {} len to be less than MAX_STRING_SIZE ({} > {})",
+                    "Expected server_reference {} len to be less than MAX_STRING_LENGTH ({} > {})",
                     server_reference,
                     server_reference_len,
-                    protocol::MAX_STRING_SIZE
+                    protocol::MAX_STRING_LENGTH
                 )
             }
 
@@ -240,12 +240,12 @@ impl DisconnectPacket {
 
         if let Some(ref reason_string) = reason_string {
             let reason_string_len = reason_string.len();
-            if reason_string_len > protocol::MAX_STRING_SIZE {
+            if reason_string_len > protocol::MAX_STRING_LENGTH {
                 anyhow::bail!(
-                    "Expected reason_string {} len to be less than MAX_STRING_SIZE ({} > {})",
+                    "Expected reason_string {} len to be less than MAX_STRING_LENGTH ({} > {})",
                     reason_string,
                     reason_string_len,
-                    protocol::MAX_STRING_SIZE
+                    protocol::MAX_STRING_LENGTH
                 )
             }
         }
@@ -258,40 +258,48 @@ impl DisconnectPacket {
             reason_string,
             user_properties,
             server_reference,
+            remaining_len: 0,
         })
     }
 
-    /// Create the fixed header for the DISCONNECT packet.
-    fn create_fixed_header(&self, remaining_length: u32) -> Vec<u8> {
-        // BIT       7  6  5  4     3 2 1 0
-        // BYTE 1:   DISCONNECT     RESERVED
-        // BYTE 2..:   REMAINING_LENGTH
-        match remaining_length {
-            0 => {
-                let mut header = vec![0; 2];
-                header[0] = protocol::DISCONNECT << 4; // shift code to left (most significant bits)
-                header[1] = 0x0;
+    /// Encode the fixed header for an MQTT control packet.
+    ///
+    /// The MQTT fixed header is composed of:
+    /// - The control byte (the packet type and flags)
+    /// - The remaining length (variable-length integer)
+    ///
+    /// This method encodes the fixed header according to the MQTT 5.0 specification.
+    ///
+    /// # Fixed Header Format
+    ///
+    /// | Bit       | 7   | 6   | 5   | 4   | 3   | 2   | 1   | 0   |
+    /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
+    /// | Byte 1    | Packet type           | Packet flags          |
+    /// | Byte 2    | Remaining Length                              |
+    fn encode_fixed_header(&self) -> anyhow::Result<Vec<u8>> {
+        let remaining_len = u32::try_from(self.remaining_len).with_context(|| {
+            format!("Failed to cast remaining length {} to u32", self.remaining_len)
+        })?;
+        let encoded_remaining_len = protocol::encode_variable_byte_int(remaining_len);
 
-                header
-            }
-            remaining_length => {
-                let encoded_remaining_len = protocol::encode_variable_byte_int(remaining_length);
-                let mut header = vec![0; 1 + encoded_remaining_len.len()];
+        let control_byte = PacketType::Disconnect.control_byte();
 
-                header[0] = protocol::DISCONNECT << 4; // shift code to left (most significant bits)
-                header.extend(encoded_remaining_len);
+        // Allocate enough space for the control packet type, flags and remaining length
+        let mut header = Vec::with_capacity(1 + encoded_remaining_len.len());
 
-                header
-            }
-        }
+        // Append the control packet, flags and remaining length to fixed header
+        header.push(control_byte);
+        header.extend(encoded_remaining_len);
+
+        Ok(header)
     }
 
     /// Encode the `DisconnectPacket` into bytes.
     /// This attempts to respect MQTT property size constraints and will omit properties that don't fit.
     ///
     /// # Errors
-    /// Returns an error if remaining length or packet size exceeds `MAX_ALLOWED_LENGTH`.
-    pub fn encode(self) -> anyhow::Result<Vec<u8>> {
+    /// Returns an error if packet size exceeds `MAX_ALLOWED_LENGTH`.
+    pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
         trace!("Serializing DisconnectPacket with reason_code = {}", self.reason_code);
 
         // Check if we have any properties at all
@@ -304,67 +312,45 @@ impl DisconnectPacket {
         if matches!(self.reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties
         {
             debug!("NormalDisconnection with no properties: sending minimal packet");
-            return Ok(self.create_fixed_header(0));
+            return Ok(self
+                .encode_fixed_header()
+                .context("Failed to encode packet fixed header")?);
         }
 
         // Precompute total size of variable header properties
         let mut properties = Vec::new();
-        let mut remaining_length = 0;
 
         // Add Session Expiry Interval if present
         if let Some(session_expiry_interval) = self.session_expiry_interval {
             properties.push(SESSION_EXPIRY_INTERVAL_IDENTIFIER);
             properties.extend(session_expiry_interval.to_be_bytes());
-
-            remaining_length += 5;
         }
 
         // Add Server Reference if present
         if let Some(server_reference) = &self.server_reference {
-            let len = 1 + server_reference.len();
+            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            if remaining_length + len <= protocol::MAX_ALLOWED_LENGTH {
-                properties.push(SERVER_REFERENCE_IDENTIFIER);
-                properties.extend(
-                    protocol::encode_utf8_string(server_reference)
-                        .context("Failed to encode server_reference")?,
-                );
+            let server_reference = protocol::encode_utf8_string(server_reference)
+                .context("Failed to encode server_reference")?;
 
-                remaining_length += len;
-            } else {
-                warn!(
-                    "Omitting Server Reference due to size constraints ({} > {})",
-                    remaining_length + len,
-                    protocol::MAX_ALLOWED_LENGTH
-                );
-            }
+            properties.push(SERVER_REFERENCE_IDENTIFIER);
+            properties.extend(server_reference);
         }
 
         // Add Reason String if present
         if let Some(reason_string) = &self.reason_string {
-            let len = 1 + reason_string.len();
+            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            // The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
-            if remaining_length + len <= protocol::MAX_ALLOWED_LENGTH {
-                properties.push(REASON_STRING_IDENTIFIER);
-                properties.extend(
-                    protocol::encode_utf8_string(reason_string)
-                        .context("Failed to encode reason_string")?,
-                );
+            let reason_string = protocol::encode_utf8_string(reason_string)
+                .context("Failed to encode reason_string")?;
 
-                remaining_length += len;
-            } else {
-                warn!(
-                    "Omitting Reason String due to size constraints ({} > {})",
-                    remaining_length + len,
-                    protocol::MAX_ALLOWED_LENGTH
-                );
-            }
+            properties.push(REASON_STRING_IDENTIFIER);
+            properties.extend(reason_string);
         }
 
         // Add User Properties if present
         if let Some(user_properties) = &self.user_properties {
-            let mut user_property = Vec::new();
+            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
             // Encode properties as UTF-8 String Pair composed by:
             // - 2-byte name length
@@ -372,42 +358,34 @@ impl DisconnectPacket {
             // - 2-byte value length
             // - property value bytes
             for (name, value) in user_properties {
-                user_property.push(USER_PROPERTY_IDENTIFIER);
-                user_property.extend(
+                properties.push(USER_PROPERTY_IDENTIFIER);
+                properties.extend(
                     protocol::encode_utf8_string(name)
                         .with_context(|| format!("Failed to encode user_property name {name}"))?,
                 );
-                user_property
+                properties
                     .extend(protocol::encode_utf8_string(value).with_context(|| {
                         format!("Failed to encode user_property value {value}")
                     })?);
             }
-
-            // The sender MUST NOT send this property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver
-            if user_property.len() <= protocol::MAX_ALLOWED_LENGTH {
-                remaining_length += user_property.len();
-
-                properties.extend(user_property);
-            } else {
-                warn!(
-                    "Omitting User Property due to size constraints ({} > {})",
-                    user_property.len(),
-                    protocol::MAX_ALLOWED_LENGTH
-                );
-            }
         }
 
-        // According to MQTT spec, variable byte ints should have at most 4 bytes
-        let remaining_length = u32::try_from(remaining_length)
-            .context("Failed to cast remaining length len to u32")?;
-        let properties_length =
-            u32::try_from(properties.len()).context("Failed to cast properties length to u32")?;
+        let properties_len = u32::try_from(properties.len()).with_context(|| {
+            format!("Failed to cast properties_len {} to u32", properties.len())
+        })?;
+        let properties_len = protocol::encode_variable_byte_int(properties_len);
+
+        // Remaining Length: Reason code + Property length + Properties
+        self.remaining_len += 1 + properties_len.len() + properties.len();
+
+        let fixed_header =
+            self.encode_fixed_header().context("Failed to encode packet fixed header")?;
 
         // Build packet: Fixed header + Reason code + Property length + Properties
-        let mut packet = Vec::new();
-        packet.extend(self.create_fixed_header(remaining_length));
-        packet.push(self.reason_code as u8);
-        packet.extend(protocol::encode_variable_byte_int(properties_length));
+        let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);
+        packet.extend(fixed_header);
+        packet.push(self.reason_code.to_u8());
+        packet.extend(properties_len);
         packet.extend(properties);
 
         // Ensure the packet isn't larger than the MAX_ALLOWED_LENGTH
