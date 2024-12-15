@@ -9,11 +9,18 @@ def on_connect(client, userdata, flags, reason_code, properties):
     # reconnect then subscriptions will be renewed.
     client.subscribe("$SYS/#")
 
+
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    print(msg.topic+" "+str(msg.payload))
+    print(f"{msg.topic} {str(msg.payload)}")
 
-mqttc = mqtt.Client(CallbackAPIVersion.VERSION2, protocol=MQTTProtocolVersion.MQTTv5, client_id="client-001")
+
+mqttc = mqtt.Client(
+    CallbackAPIVersion.VERSION2,
+    protocol=MQTTProtocolVersion.MQTTv5,
+    client_id="client001",
+)
+mqttc.username_pw_set(username="username", password="password")
 mqttc.on_connect = on_connect
 mqttc.on_message = on_message
 

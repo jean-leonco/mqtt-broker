@@ -331,3 +331,25 @@ pub(crate) fn encode_utf8_string(value: &str) -> anyhow::Result<Vec<u8>> {
 
     Ok(encoded_value)
 }
+
+/// Decode binary data.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901012>
+///
+/// # Errors
+/// - Returns an error if:
+///   - Reading the length bytes or binary data bytes fails.
+pub(crate) fn decode_binary_data(stream: &mut impl Read) -> anyhow::Result<Vec<u8>> {
+    // Read the 2-byte length prefix, representing the data's length in big-endian format
+    let mut encoded_len = [0; 2];
+    stream.read_exact(&mut encoded_len).context("Failed to read 2-byte length from stream")?;
+    let len = u16::from_be_bytes(encoded_len) as usize;
+
+    // Read binary data from stream
+    let mut decoded_value = vec![0; len];
+    stream
+        .read_exact(&mut decoded_value)
+        .with_context(|| format!("Failed to read {len} bytes of binary data from the stream"))?;
+
+    Ok(decoded_value)
+}
