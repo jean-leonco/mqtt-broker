@@ -315,7 +315,6 @@ impl DisconnectPacket {
             return self.encode_fixed_header().context("Failed to encode packet fixed header");
         }
 
-        // Precompute total size of variable header properties
         let mut properties = Vec::new();
 
         // Add Session Expiry Interval if present

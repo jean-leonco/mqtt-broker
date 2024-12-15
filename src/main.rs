@@ -39,21 +39,12 @@ fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
     let mut writer = stream.try_clone().context("Failed to clone writer stream")?;
     let mut reader = BufReader::new(stream);
 
-    // MQTT protocol operates by exchanging control packets
-    // The packet is composed by:
-    // - Fixed header (1 byte) containing:
-    //   - The packet type represented by a 4 bit uint
-    //   - Packet flags specific to the packet type. If it's marked as reserved, it could be used in the future and thus it can't be ignored by the server (FOR NOW)
-    // - Remaining length (1-4 bytes). Contains how many bytes are in the variable header (if exists) and payload
-    // - Variable header (variable size). Content varies depending on the packet type
-    // - Payload (variable size). Required for some packet types like connect and publish
-
-    // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
     let fixed_header = protocol::decode_u8(&mut reader).context("Failed to read fixed header")?;
-    let packet_type = fixed_header >> 4;
 
+    let packet_type = fixed_header >> 4;
     debug!("Received packet_type: {packet_type}");
 
+    // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
     match PacketType::from_u8(packet_type) {
         Some(packet_type) => match packet_type {
             PacketType::Connect => {
