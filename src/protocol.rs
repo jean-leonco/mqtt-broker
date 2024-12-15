@@ -202,7 +202,7 @@ pub(crate) fn decode_variable_byte_int<R: Read>(reader: &mut R) -> anyhow::Resul
     let mut encoded_byte = [0; 1];
 
     loop {
-        // Read next byte from reader
+        // Read next byte
         reader.read_exact(&mut encoded_byte).context("Failed to read encoded byte")?;
 
         // Take the 7 least significant bits
@@ -285,16 +285,13 @@ pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
 ///   - Reading the length bytes or string bytes fails.
 ///   - The string bytes cannot be converted into a valid UTF-8 `String`.
 pub(crate) fn decode_utf8_string<R: Read>(reader: &mut R) -> anyhow::Result<String> {
-    // Read the 2-byte length prefix, representing the string's length in big-endian format
-    let mut encoded_len = [0; 2];
-    reader.read_exact(&mut encoded_len).context("Failed to read 2-byte length from reader")?;
-    let len = u16::from_be_bytes(encoded_len) as usize;
+    let len = decode_u16(reader).context("Failed to decode string length")? as usize;
 
     // Allocate a buffer with the exact size needed for the string
     let mut encoded_value = vec![0; len];
-    reader.read_exact(&mut encoded_value).with_context(|| {
-        format!("Failed to read {len} bytes of UTF-8 encoded string from the reader")
-    })?;
+    reader
+        .read_exact(&mut encoded_value)
+        .with_context(|| format!("Failed to read UTF-8 encoded string with length {len}"))?;
 
     // Convert the UTF-8 bytes into a String
     let decoded_value = String::from_utf8(encoded_value)
@@ -340,16 +337,41 @@ pub(crate) fn encode_utf8_string(value: &str) -> anyhow::Result<Vec<u8>> {
 /// - Returns an error if:
 ///   - Reading the length bytes or binary data bytes fails.
 pub(crate) fn decode_binary_data<R: Read>(reader: &mut R) -> anyhow::Result<Vec<u8>> {
-    // Read the 2-byte length prefix, representing the data's length in big-endian format
-    let mut encoded_len = [0; 2];
-    reader.read_exact(&mut encoded_len).context("Failed to read 2-byte length from reader")?;
-    let len = u16::from_be_bytes(encoded_len) as usize;
+    let len = decode_u16(reader).context("Failed to read binary data length")? as usize;
 
-    // Read binary data from reader
+    // Read binary data
     let mut decoded_value = vec![0; len];
     reader
         .read_exact(&mut decoded_value)
-        .with_context(|| format!("Failed to read {len} bytes of binary data from the reader"))?;
+        .with_context(|| format!("Failed to read binary data with length {len}"))?;
 
     Ok(decoded_value)
+}
+
+/// Decode a 1-byte unsigned integer.
+///
+/// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901007
+///
+/// # Errors
+/// - Returns an error if:
+///   - Reading the u8 fails.
+pub(crate) fn decode_u8<R: Read>(reader: &mut R) -> anyhow::Result<u8> {
+    let mut decoded_value = [0; 1];
+    reader.read_exact(&mut decoded_value).context("Failed to read u8")?;
+
+    Ok(decoded_value[0])
+}
+
+/// Decode a 2-byte unsigned integer.
+///
+/// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901008
+///
+/// # Errors
+/// - Returns an error if:
+///   - Reading the u16 fails.
+pub(crate) fn decode_u16<R: Read>(reader: &mut R) -> anyhow::Result<u16> {
+    let mut decoded_value = [0; 2];
+    reader.read_exact(&mut decoded_value).context("Failed to read u16")?;
+
+    Ok(u16::from_be_bytes(decoded_value))
 }

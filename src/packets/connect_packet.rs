@@ -110,11 +110,9 @@ impl ConnectPacket {
             anyhow::bail!("Unsupported Protocol Version")
         }
 
-        let mut buf = [0; 1];
-
-        // The one byte unsigned value that represents the revision level of the protocol used by the Client.
-        reader.read_exact(&mut buf).context("Failed to read protocol version")?;
-        let protocol_version = u8::from_be_bytes(buf);
+        // Represents the revision level of the protocol used by the Client
+        let protocol_version =
+            protocol::decode_u8(reader).context("Failed to decode protocol version")?;
         debug!("Packet protocol_version: {}", protocol_version);
 
         if protocol_version != protocol::PROTOCOL_VERSION {
@@ -123,8 +121,8 @@ impl ConnectPacket {
         }
 
         // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
-        reader.read_exact(&mut buf).context("Failed to read connect flags")?;
-        let connect_flags = buf[0];
+        let connect_flags =
+            protocol::decode_u8(reader).context("Failed to decode connect flags")?;
         debug!("Packet connect_flags: {:08b}", connect_flags);
 
         // The Server MUST validate that the reserved flag in the CONNECT packet is set to 0
@@ -160,9 +158,7 @@ impl ConnectPacket {
             anyhow::bail!("Malformed packet")
         }
 
-        let mut keep_alive_buf = [0; 2];
-        reader.read_exact(&mut keep_alive_buf).context("Failed to read keep alive")?;
-        let keep_alive = u16::from_be_bytes(keep_alive_buf);
+        let keep_alive = protocol::decode_u16(reader).context("Failed to decode keep alive")?;
         debug!("Keep alive: {}", keep_alive);
 
         let properties_len = protocol::decode_variable_byte_int(reader)

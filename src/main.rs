@@ -1,5 +1,5 @@
 use std::{
-    io::{BufReader, Read, Write},
+    io::{BufReader, Write},
     net::{TcpListener, TcpStream},
 };
 
@@ -49,9 +49,8 @@ fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
     // - Payload (variable size). Required for some packet types like connect and publish
 
     // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
-    let mut fixed_header = [0; 1];
-    reader.read_exact(&mut fixed_header).context("Failed to read fixed header")?;
-    let packet_type = fixed_header[0] >> 4;
+    let fixed_header = protocol::decode_u8(&mut reader).context("Failed to read fixed header")?;
+    let packet_type = fixed_header >> 4;
 
     debug!("Received packet_type: {packet_type}");
 
