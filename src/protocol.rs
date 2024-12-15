@@ -3,13 +3,16 @@ use std::io::Read;
 
 use anyhow::Context;
 
-// TODO: There should be 2 consts: one for maximum packet size and other for maximum remaining length.
-// The maximum packet size is the total number of bytes in an MQTT Control Packet: fixed header size + remaining length size.
-// The maximum remaining length is the total number of bytes in an MQTT Control Packet after the fixed header: variable header + payload.
-/// MQTT maximum allowed length
-pub(crate) const MAX_ALLOWED_LENGTH: usize = 268_435_455;
+/// Protocol name.
+pub(crate) const PROTOCOL_NAME: &str = "MQTT";
 
-/// Maximum allowed length for a UTF-8 encoded string
+/// Protocol version.
+pub(crate) const PROTOCOL_VERSION: u8 = 5;
+
+/// Maximum allowed size for a packet.
+pub(crate) const MAX_PACKET_SIZE: usize = 268_435_455;
+
+/// Maximum allowed length for a UTF-8 encoded string.
 pub(crate) const MAX_STRING_LENGTH: usize = 65_535;
 
 /// Represents the MQTT Control Packet Types.
@@ -27,19 +30,19 @@ pub(crate) enum PacketType {
     /// Sent by: Client to Server or Server to Client.
     Publish = 0x03,
 
-    /// Publish acknowledgment (QoS 1).
+    /// Publish acknowledgment (`QoS` 1).
     /// Sent by: Client to Server or Server to Client.
     PubAck = 0x04,
 
-    /// Publish received (QoS 2 delivery part 1).
+    /// Publish received (`QoS` 2 delivery part 1).
     /// Sent by: Client to Server or Server to Client.
     PubRec = 0x05,
 
-    /// Publish release (QoS 2 delivery part 2).
+    /// Publish release (`QoS` 2 delivery part 2).
     /// Sent by: Client to Server or Server to Client.
     PubRel = 0x06,
 
-    /// Publish complete (QoS 2 delivery part 3).
+    /// Publish complete (`QoS` 2 delivery part 3).
     /// Sent by: Client to Server or Server to Client.
     PubComp = 0x07,
 
@@ -102,8 +105,8 @@ impl PacketType {
     }
 
     /// Converts the `PacketType` to its numeric value.
-    pub fn to_u8(&self) -> u8 {
-        *self as u8
+    pub fn to_u8(self) -> u8 {
+        self as u8
     }
 
     /// Computes the control byte for the MQTT fixed header.
@@ -113,7 +116,7 @@ impl PacketType {
     /// - Packet flags (4 least significant bits)
     ///
     /// This function handles static flags for most packet types as per the MQTT 5.0 specification.
-    /// For the `Publish` packet type, dynamic flags such as QoS, retain, and DUP are excluded,
+    /// For the `Publish` packet type, dynamic flags such as `QoS`, retain, and DUP are excluded,
     /// as they must be handled separately.
     ///
     /// # Fixed Header Format
@@ -122,8 +125,8 @@ impl PacketType {
     /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
     /// | Byte 1    | Packet type           | Packet flags          |
     /// | Byte 2    | Remaining Length                              |
-    pub fn control_byte(&self) -> u8 {
-        let control_byte = match self {
+    pub fn control_byte(self) -> u8 {
+        match self {
             // For these packets, the 4 LSB are reserved and must be: 0000
             Self::Connect
             | Self::ConnAck
@@ -147,9 +150,7 @@ impl PacketType {
                 // Shift packet type to MSB and mask it. For example, with PubRel it becomes: 0000_0110 -> 0110_0010
                 self.to_u8() << 4 | 0b0000_0010
             }
-        };
-
-        control_byte
+        }
     }
 }
 

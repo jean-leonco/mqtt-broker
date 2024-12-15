@@ -132,8 +132,8 @@ pub(crate) enum DisconnectReasonCode {
 
 impl DisconnectReasonCode {
     /// Converts the `DisconnectReasonCode` to its numeric value.
-    pub fn to_u8(&self) -> u8 {
-        *self as u8
+    pub fn to_u8(self) -> u8 {
+        self as u8
     }
 }
 
@@ -298,7 +298,7 @@ impl DisconnectPacket {
     /// This attempts to respect MQTT property size constraints and will omit properties that don't fit.
     ///
     /// # Errors
-    /// Returns an error if packet size exceeds `MAX_ALLOWED_LENGTH`.
+    /// Returns an error if packet size exceeds `MAX_PACKET_SIZE`.
     pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
         trace!("Serializing DisconnectPacket with reason_code = {}", self.reason_code);
 
@@ -312,9 +312,7 @@ impl DisconnectPacket {
         if matches!(self.reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties
         {
             debug!("NormalDisconnection with no properties: sending minimal packet");
-            return Ok(self
-                .encode_fixed_header()
-                .context("Failed to encode packet fixed header")?);
+            return self.encode_fixed_header().context("Failed to encode packet fixed header");
         }
 
         // Precompute total size of variable header properties
@@ -388,11 +386,11 @@ impl DisconnectPacket {
         packet.extend(properties_len);
         packet.extend(properties);
 
-        // Ensure the packet isn't larger than the MAX_ALLOWED_LENGTH
-        if packet.len() > protocol::MAX_ALLOWED_LENGTH {
+        // Ensure the packet isn't larger than the MAX_PACKET_SIZE
+        if packet.len() > protocol::MAX_PACKET_SIZE {
             anyhow::bail!(
             "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
-            packet.len(), protocol::MAX_ALLOWED_LENGTH
+            packet.len(), protocol::MAX_PACKET_SIZE
         );
         }
 
