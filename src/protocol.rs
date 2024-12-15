@@ -350,7 +350,7 @@ pub(crate) fn decode_binary_data<R: Read>(reader: &mut R) -> anyhow::Result<Vec<
 
 /// Decode a 1-byte unsigned integer.
 ///
-/// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901007
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901007>
 ///
 /// # Errors
 /// - Returns an error if:
@@ -364,7 +364,7 @@ pub(crate) fn decode_u8<R: Read>(reader: &mut R) -> anyhow::Result<u8> {
 
 /// Decode a 2-byte unsigned integer.
 ///
-/// Reference: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901008
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901008>
 ///
 /// # Errors
 /// - Returns an error if:
