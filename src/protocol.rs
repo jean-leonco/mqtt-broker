@@ -1,4 +1,4 @@
-use core::fmt;
+use std::fmt;
 use std::io::Read;
 
 use anyhow::Context;
@@ -329,6 +329,34 @@ pub(crate) fn encode_utf8_string(value: &str) -> anyhow::Result<Vec<u8>> {
     Ok(encoded_value)
 }
 
+/// Validates a UTF-8 string based on MQTT protocol requirements.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
+///
+/// # Errors
+/// - Returns an error if:
+///   - The string length is bigger than `MAX_STRING_LENGTH`.
+///   - The string character data include encodings of code points between U+D800 and U+DFFF.
+///   - The string includes an encoding of the null character U+0000.
+///   - The string includes U+0001..U+001F control characters, U+007F..U+009F control characters or code points defined in the Unicode specification to be non-characters.
+///
+pub(crate) fn validate_utf8_string(value: &str) -> anyhow::Result<()> {
+    // Unless stated otherwise all UTF-8 encoded strings can have any length in the range 0 to 65,535 bytes
+    let len = value.len();
+    if value.len() > MAX_STRING_LENGTH {
+        anyhow::bail!(
+            "String length {len} exceeds maximum allowed size of {MAX_STRING_LENGTH} bytes"
+        );
+    }
+
+    // Missing: U+D800..U+DFFF, code points defined in the Unicode specification to be non-characters
+    if value.chars().all(char::is_control) {
+        anyhow::bail!("String include invalid characters");
+    }
+
+    Ok(())
+}
+
 /// Decode binary data.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901012>
@@ -374,4 +402,31 @@ pub(crate) fn decode_u16<R: Read>(reader: &mut R) -> anyhow::Result<u16> {
     reader.read_exact(&mut decoded_value).context("Failed to read u16")?;
 
     Ok(u16::from_be_bytes(decoded_value))
+}
+
+/// Encode a UTF-8 String Pair.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901013>
+///
+/// # Errors
+/// - Returns an error if:
+///   - Encoding name fails.
+///   - Encoding value fails.
+pub(crate) fn encode_utf8_string_pair(
+    (name, value): (&String, &String),
+) -> anyhow::Result<Vec<u8>> {
+    // UTF-8 String Pair are composed by:
+    // - 2-byte name length
+    // - name
+    // - 2-byte value length
+    // - value
+
+    let mut encoded_value =
+        encode_utf8_string(name).with_context(|| format!("Failed to encode name {name}"))?;
+
+    let mut value =
+        encode_utf8_string(value).with_context(|| format!("Failed to encode value {value}"))?;
+    encoded_value.append(&mut value);
+
+    Ok(encoded_value)
 }

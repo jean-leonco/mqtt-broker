@@ -41,8 +41,6 @@ pub(crate) struct ConnectPacket {
 
     /// Session Expiry Interval in seconds.
     ///
-    /// If it is set to 0, or is absent, the Session ends when the Network Connection is closed.
-    ///
     /// If the Session Expiry Interval is 0xFFFFFFFF (`UINT_MAX`), the Session does not expire.
     session_expiry_interval: Option<u32>,
 

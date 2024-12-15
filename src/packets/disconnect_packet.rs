@@ -1,5 +1,5 @@
 use anyhow::Context;
-use log::{debug, trace};
+use log::debug;
 use std::{collections::HashMap, fmt};
 
 use crate::protocol::{self, PacketType};
@@ -205,9 +205,9 @@ impl DisconnectPacket {
     ///
     /// # Errors
     /// - Returns an error if:
-    ///   - `server_reference` is present, but its length exceeds `protocol::MAX_STRING_LENGTH`.
+    ///   - `server_reference` is not a valid encoded UTF-8 string..
     ///   - `server_reference` is present, but `reason_code` is not `UseAnotherServer` or `ServerMoved`.
-    ///   - `reason_string` is provided, but its length exceeds `protocol::MAX_STRING_LENGTH`.
+    ///   - `reason_string` is not a valid encoded UTF-8 string.
     pub fn new(
         reason_code: DisconnectReasonCode,
         session_expiry_interval: Option<u32>,
@@ -215,16 +215,14 @@ impl DisconnectPacket {
         user_properties: Option<HashMap<String, String>>,
         server_reference: Option<String>,
     ) -> anyhow::Result<Self> {
+        if let Some(ref reason_string) = reason_string {
+            protocol::validate_utf8_string(reason_string)
+                .context("reason_string is not a valid utf8 string")?;
+        }
+
         if let Some(ref server_reference) = server_reference {
-            let server_reference_len = server_reference.len();
-            if server_reference_len > protocol::MAX_STRING_LENGTH {
-                anyhow::bail!(
-                    "Expected server_reference {} len to be less than MAX_STRING_LENGTH ({} > {})",
-                    server_reference,
-                    server_reference_len,
-                    protocol::MAX_STRING_LENGTH
-                )
-            }
+            protocol::validate_utf8_string(server_reference)
+                .context("server_reference is not a valid utf8 string")?;
 
             if !(matches!(
                 reason_code,
@@ -238,20 +236,6 @@ impl DisconnectPacket {
             }
         }
 
-        if let Some(ref reason_string) = reason_string {
-            let reason_string_len = reason_string.len();
-            if reason_string_len > protocol::MAX_STRING_LENGTH {
-                anyhow::bail!(
-                    "Expected reason_string {} len to be less than MAX_STRING_LENGTH ({} > {})",
-                    reason_string,
-                    reason_string_len,
-                    protocol::MAX_STRING_LENGTH
-                )
-            }
-        }
-
-        // TODO: Validate user_properties size
-
         Ok(Self {
             reason_code,
             session_expiry_interval,
@@ -262,13 +246,11 @@ impl DisconnectPacket {
         })
     }
 
-    /// Encode the fixed header for an MQTT control packet.
+    /// Encode the fixed header for the control packet.
     ///
     /// The MQTT fixed header is composed of:
     /// - The control byte (the packet type and flags)
     /// - The remaining length (variable-length integer)
-    ///
-    /// This method encodes the fixed header according to the MQTT 5.0 specification.
     ///
     /// # Fixed Header Format
     ///
@@ -300,8 +282,6 @@ impl DisconnectPacket {
     /// # Errors
     /// Returns an error if packet size exceeds `MAX_PACKET_SIZE`.
     pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
-        trace!("Serializing DisconnectPacket with reason_code = {}", self.reason_code);
-
         // Check if we have any properties at all
         let has_properties = self.session_expiry_interval.is_some()
             || self.reason_string.is_some()
@@ -349,21 +329,12 @@ impl DisconnectPacket {
         if let Some(user_properties) = &self.user_properties {
             // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            // Encode properties as UTF-8 String Pair composed by:
-            // - 2-byte name length
-            // - property name bytes
-            // - 2-byte value length
-            // - property value bytes
-            for (name, value) in user_properties {
+            for user_property in user_properties {
                 properties.push(USER_PROPERTY_IDENTIFIER);
                 properties.extend(
-                    protocol::encode_utf8_string(name)
-                        .with_context(|| format!("Failed to encode user_property name {name}"))?,
+                    protocol::encode_utf8_string_pair(user_property)
+                        .context("Failed to encode user_property")?,
                 );
-                properties
-                    .extend(protocol::encode_utf8_string(value).with_context(|| {
-                        format!("Failed to encode user_property value {value}")
-                    })?);
             }
         }
 

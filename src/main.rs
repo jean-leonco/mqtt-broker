@@ -7,8 +7,11 @@ pub(crate) mod packets;
 pub(crate) mod protocol;
 
 use anyhow::{Context, Ok};
-use log::{debug, error, info, trace};
-use packets::{connect_packet::ConnectPacket, disconnect_packet};
+use log::{debug, error, info};
+use packets::{
+    conn_ack_packet::{ConnAckPacket, ConnectReasonCode},
+    connect_packet::ConnectPacket,
+};
 use protocol::PacketType;
 
 fn main() -> anyhow::Result<()> {
@@ -34,7 +37,7 @@ fn main() -> anyhow::Result<()> {
 /// # Errors
 /// Returns an error if the packet is malformed or processing fails.
 fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
-    trace!("Starting to handle new client connection");
+    debug!("Starting to handle new client connection");
 
     let mut writer = stream.try_clone().context("Failed to clone writer stream")?;
     let mut reader = BufReader::new(stream);
@@ -52,21 +55,37 @@ fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
                     .context("Failed to decode Connect packet")?;
                 debug!("Connect packet: {:?}", packet);
 
-                let response = disconnect_packet::DisconnectPacket::new(
-                disconnect_packet::DisconnectReasonCode::NotAuthorized,
-                None,
-                Some(String::from(
-                    "Client is not authorized to perform this action. Please verify credentials.",
-                )),
-                None,
-                None,
-            )
-            .context("Failed to create DISCONNECT packet")?
-            .encode()
-            .context("Failed to encode DISCONNECT packet")?;
+                let mut response_packet = ConnAckPacket::new(
+                    false,
+                    ConnectReasonCode::Success,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .context("Failed to create ConnAck packet")?;
+                debug!("ConnAck packet: {:?}", response_packet);
 
-                info!("Sending DISCONNECT packet (NotAuthorized) to the client");
-                writer.write_all(&response).context("Failed to write DISCONNECT packet")?;
+                let encoded_response_packet =
+                    response_packet.encode().context("Failed to encode ConnAck packet")?;
+
+                info!("Sending ConnAck packet to the client");
+                writer
+                    .write_all(&encoded_response_packet)
+                    .context("Failed to write ConnAck packet")?;
             }
             // Packet type not implemented
             _ => anyhow::bail!("Packet type {} not implemented", packet_type),
