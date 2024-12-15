@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     net::{TcpListener, TcpStream},
 };
 
@@ -33,8 +33,11 @@ fn main() -> anyhow::Result<()> {
 ///
 /// # Errors
 /// Returns an error if the packet is malformed or processing fails.
-fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
+fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
     trace!("Starting to handle new client connection");
+
+    let mut writer = stream.try_clone().context("Failed to clone writer stream")?;
+    let mut reader = BufReader::new(stream);
 
     // MQTT protocol operates by exchanging control packets
     // The packet is composed by:
@@ -47,7 +50,7 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
 
     // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
     let mut fixed_header = [0; 1];
-    stream.read_exact(&mut fixed_header).context("Failed to read fixed header")?;
+    reader.read_exact(&mut fixed_header).context("Failed to read fixed header")?;
     let packet_type = fixed_header[0] >> 4;
 
     debug!("Received packet_type: {packet_type}");
@@ -55,7 +58,7 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
     match PacketType::from_u8(packet_type) {
         Some(packet_type) => match packet_type {
             PacketType::Connect => {
-                let packet = ConnectPacket::decode(&mut stream)
+                let packet = ConnectPacket::decode(&mut reader)
                     .context("Failed to decode Connect packet")?;
                 debug!("Connect packet: {:?}", packet);
 
@@ -73,7 +76,7 @@ fn handle_connection(mut stream: TcpStream) -> anyhow::Result<()> {
             .context("Failed to encode DISCONNECT packet")?;
 
                 info!("Sending DISCONNECT packet (NotAuthorized) to the client");
-                stream.write_all(&response).context("Failed to write DISCONNECT packet")?;
+                writer.write_all(&response).context("Failed to write DISCONNECT packet")?;
             }
             // Packet type not implemented
             _ => anyhow::bail!("Packet type {} not implemented", packet_type),

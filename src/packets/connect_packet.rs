@@ -6,6 +6,7 @@ use log::{debug, warn};
 use crate::protocol;
 
 // TODO: Add will_properties and will_payload
+/// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct ConnectPacket {
@@ -91,16 +92,17 @@ pub(crate) struct ConnectPacket {
 }
 
 impl ConnectPacket {
-    pub fn decode(stream: &mut impl Read) -> anyhow::Result<Self> {
+    /// Decode a input reader into the `ConnectPacket`.
+    pub fn decode<R: Read>(reader: &mut R) -> anyhow::Result<Self> {
         debug!("Decoding Connect packet");
 
-        let remaining_len = protocol::decode_variable_byte_int(stream)
+        let remaining_len = protocol::decode_variable_byte_int(reader)
             .context("Failed to decode remaining length")?;
         debug!("Packet remaining_len: {}", remaining_len);
 
         // The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”
         let protocol_name =
-            protocol::decode_utf8_string(stream).context("Failed to decode protocol name")?;
+            protocol::decode_utf8_string(reader).context("Failed to decode protocol name")?;
         debug!("Packet protocol_name: {}", protocol_name);
 
         if protocol_name != protocol::PROTOCOL_NAME {
@@ -111,7 +113,7 @@ impl ConnectPacket {
         let mut buf = [0; 1];
 
         // The one byte unsigned value that represents the revision level of the protocol used by the Client.
-        stream.read_exact(&mut buf).context("Failed to read protocol version")?;
+        reader.read_exact(&mut buf).context("Failed to read protocol version")?;
         let protocol_version = u8::from_be_bytes(buf);
         debug!("Packet protocol_version: {}", protocol_version);
 
@@ -121,7 +123,7 @@ impl ConnectPacket {
         }
 
         // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
-        stream.read_exact(&mut buf).context("Failed to read connect flags")?;
+        reader.read_exact(&mut buf).context("Failed to read connect flags")?;
         let connect_flags = buf[0];
         debug!("Packet connect_flags: {:08b}", connect_flags);
 
@@ -159,11 +161,11 @@ impl ConnectPacket {
         }
 
         let mut keep_alive_buf = [0; 2];
-        stream.read_exact(&mut keep_alive_buf).context("Failed to read keep alive")?;
+        reader.read_exact(&mut keep_alive_buf).context("Failed to read keep alive")?;
         let keep_alive = u16::from_be_bytes(keep_alive_buf);
         debug!("Keep alive: {}", keep_alive);
 
-        let properties_len = protocol::decode_variable_byte_int(stream)
+        let properties_len = protocol::decode_variable_byte_int(reader)
             .context("Failed to decode properties len")?;
         debug!("Properties length: {}", properties_len);
 
@@ -184,7 +186,7 @@ impl ConnectPacket {
         };
 
         let client_id =
-            protocol::decode_utf8_string(stream).context("Failed to decode client id")?;
+            protocol::decode_utf8_string(reader).context("Failed to decode client id")?;
         debug!("Client identifier: {}", client_id);
 
         // If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid)
@@ -212,7 +214,7 @@ impl ConnectPacket {
 
         let will_topic = if will_flag {
             let will_topic =
-                protocol::decode_utf8_string(stream).context("Failed to decode will topic")?;
+                protocol::decode_utf8_string(reader).context("Failed to decode will topic")?;
             debug!("Will topic: {}", will_topic);
             Some(will_topic)
         } else {
@@ -221,7 +223,7 @@ impl ConnectPacket {
 
         let username = if username_flag {
             let username =
-                protocol::decode_utf8_string(stream).context("Failed to decode username")?;
+                protocol::decode_utf8_string(reader).context("Failed to decode username")?;
             debug!("Username: {}", username);
             Some(username)
         } else {
@@ -230,7 +232,7 @@ impl ConnectPacket {
 
         let password = if password_flag {
             let password =
-                protocol::decode_binary_data(stream).context("Failed to decode password")?;
+                protocol::decode_binary_data(reader).context("Failed to decode password")?;
             debug!("Password decoded");
             Some(password)
         } else {
