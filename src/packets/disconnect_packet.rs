@@ -2,7 +2,13 @@ use anyhow::Context;
 use log::debug;
 use std::{collections::HashMap, fmt};
 
-use crate::protocol::{self, PacketType};
+use crate::protocol::{
+    mqtt_data::{
+        encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int, validate_utf8_string,
+    },
+    packet_type::PacketType,
+    MAX_PACKET_SIZE,
+};
 
 const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
@@ -99,7 +105,7 @@ pub(crate) enum DisconnectReasonCode {
 
     /// The Client specified a `QoS` greater than the `QoS` specified in a Maximum `QoS` in the CONNACK.
     /// Sent by: Server.
-    QoSNotSupported = 0x9B,
+    QosNotSupported = 0x9B,
 
     /// The Client should temporarily change its Server.
     /// Sent by: Server.
@@ -140,35 +146,35 @@ impl DisconnectReasonCode {
 impl fmt::Display for DisconnectReasonCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            Self::NormalDisconnection => "NormalDisconnection",
-            Self::DisconnectWithWillMessage => "DisconnectWithWillMessage",
-            Self::UnspecifiedError => "UnspecifiedError",
-            Self::MalformedPacket => "MalformedPacket",
-            Self::ProtocolError => "ProtocolError",
-            Self::ImplementationSpecificError => "ImplementationSpecificError",
-            Self::NotAuthorized => "NotAuthorized",
-            Self::ServerBusy => "ServerBusy",
-            Self::ServerShuttingDown => "ServerShuttingDown",
-            Self::KeepAliveTimeout => "KeepAliveTimeout",
-            Self::SessionTakenOver => "SessionTakenOver",
-            Self::TopicFilterInvalid => "TopicFilterInvalid",
-            Self::TopicNameInvalid => "TopicNameInvalid",
-            Self::ReceiveMaximumExceeded => "ReceiveMaximumExceeded",
-            Self::TopicAliasInvalid => "TopicAliasInvalid",
-            Self::PacketTooLarge => "PacketTooLarge",
-            Self::MessageRateTooHigh => "MessageRateTooHigh",
-            Self::QuotaExceeded => "QuotaExceeded",
-            Self::AdministrativeAction => "AdministrativeAction",
-            Self::PayloadFormatInvalid => "PayloadFormatInvalid",
-            Self::RetainNotSupported => "RetainNotSupported",
-            Self::QoSNotSupported => "QoSNotSupported",
-            Self::UseAnotherServer => "UseAnotherServer",
-            Self::ServerMoved => "ServerMoved",
-            Self::SharedSubscriptionsNotSupported => "SharedSubscriptionsNotSupported",
-            Self::ConnectionRateExceeded => "ConnectionRateExceeded",
-            Self::MaximumConnectTime => "MaximumConnectTime",
-            Self::SubscriptionIdentifiersNotSupported => "SubscriptionIdentifiersNotSupported",
-            Self::WildcardSubscriptionsNotSupported => "WildcardSubscriptionsNotSupported",
+            Self::NormalDisconnection => "Normal disconnection",
+            Self::DisconnectWithWillMessage => "Disconnect with will message",
+            Self::UnspecifiedError => "Unspecified error",
+            Self::MalformedPacket => "Malformed packet",
+            Self::ProtocolError => "Protocol error",
+            Self::ImplementationSpecificError => "Implementation specific error",
+            Self::NotAuthorized => "Not authorized",
+            Self::ServerBusy => "Server busy",
+            Self::ServerShuttingDown => "Server shutting down",
+            Self::KeepAliveTimeout => "Keep alive timeout",
+            Self::SessionTakenOver => "Session taken over",
+            Self::TopicFilterInvalid => "Topic filter invalid",
+            Self::TopicNameInvalid => "Topic name invalid",
+            Self::ReceiveMaximumExceeded => "Receive maximum exceeded",
+            Self::TopicAliasInvalid => "Topic alias invalid",
+            Self::PacketTooLarge => "Packet too large",
+            Self::MessageRateTooHigh => "Message rate too high",
+            Self::QuotaExceeded => "Quota exceeded",
+            Self::AdministrativeAction => "Administrative action",
+            Self::PayloadFormatInvalid => "Payload format invalid",
+            Self::RetainNotSupported => "Retain not supported",
+            Self::QosNotSupported => "QoS not supported",
+            Self::UseAnotherServer => "Use another server",
+            Self::ServerMoved => "Server moved",
+            Self::SharedSubscriptionsNotSupported => "Shared subscriptions not supported",
+            Self::ConnectionRateExceeded => "Connection rate exceeded",
+            Self::MaximumConnectTime => "Maximum connect time",
+            Self::SubscriptionIdentifiersNotSupported => "Subscription identifiers not supported",
+            Self::WildcardSubscriptionsNotSupported => "Wildcard subscriptions not supported",
         };
         write!(f, "{value}")
     }
@@ -216,12 +222,12 @@ impl DisconnectPacket {
         server_reference: Option<String>,
     ) -> anyhow::Result<Self> {
         if let Some(ref reason_string) = reason_string {
-            protocol::validate_utf8_string(reason_string)
+            validate_utf8_string(reason_string)
                 .context("reason_string is not a valid utf8 string")?;
         }
 
         if let Some(ref server_reference) = server_reference {
-            protocol::validate_utf8_string(server_reference)
+            validate_utf8_string(server_reference)
                 .context("server_reference is not a valid utf8 string")?;
 
             if !(matches!(
@@ -262,7 +268,7 @@ impl DisconnectPacket {
         let remaining_len = u32::try_from(self.remaining_len).with_context(|| {
             format!("Failed to cast remaining length {} to u32", self.remaining_len)
         })?;
-        let encoded_remaining_len = protocol::encode_variable_byte_int(remaining_len);
+        let encoded_remaining_len = encode_variable_byte_int(remaining_len);
 
         let control_byte = PacketType::Disconnect.control_byte();
 
@@ -307,7 +313,7 @@ impl DisconnectPacket {
         if let Some(server_reference) = &self.server_reference {
             // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            let server_reference = protocol::encode_utf8_string(server_reference)
+            let server_reference = encode_utf8_string(server_reference)
                 .context("Failed to encode server_reference")?;
 
             properties.push(SERVER_REFERENCE_IDENTIFIER);
@@ -318,8 +324,8 @@ impl DisconnectPacket {
         if let Some(reason_string) = &self.reason_string {
             // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            let reason_string = protocol::encode_utf8_string(reason_string)
-                .context("Failed to encode reason_string")?;
+            let reason_string =
+                encode_utf8_string(reason_string).context("Failed to encode reason_string")?;
 
             properties.push(REASON_STRING_IDENTIFIER);
             properties.extend(reason_string);
@@ -332,7 +338,7 @@ impl DisconnectPacket {
             for user_property in user_properties {
                 properties.push(USER_PROPERTY_IDENTIFIER);
                 properties.extend(
-                    protocol::encode_utf8_string_pair(user_property)
+                    encode_utf8_string_pair(user_property)
                         .context("Failed to encode user_property")?,
                 );
             }
@@ -341,7 +347,7 @@ impl DisconnectPacket {
         let properties_len = u32::try_from(properties.len()).with_context(|| {
             format!("Failed to cast properties_len {} to u32", properties.len())
         })?;
-        let properties_len = protocol::encode_variable_byte_int(properties_len);
+        let properties_len = encode_variable_byte_int(properties_len);
 
         // Remaining Length: Reason code + Property length + Properties
         self.remaining_len += 1 + properties_len.len() + properties.len();
@@ -357,10 +363,10 @@ impl DisconnectPacket {
         packet.extend(properties);
 
         // Ensure the packet isn't larger than the MAX_PACKET_SIZE
-        if packet.len() > protocol::MAX_PACKET_SIZE {
+        if packet.len() > MAX_PACKET_SIZE {
             anyhow::bail!(
             "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
-            packet.len(), protocol::MAX_PACKET_SIZE
+            packet.len(), MAX_PACKET_SIZE
         );
         }
 

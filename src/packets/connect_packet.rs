@@ -1,9 +1,14 @@
-use std::{collections::HashMap, io::Read};
+use std::{collections::HashMap, error::Error, fmt, io::Read};
 
-use anyhow::{Context, Ok};
+use anyhow::Context;
 use log::{debug, warn};
 
-use crate::protocol;
+use crate::protocol::{
+    mqtt_data::{
+        decode_binary_data, decode_u16, decode_u8, decode_utf8_string, decode_variable_byte_int,
+    },
+    PROTOCOL_NAME, PROTOCOL_VERSION,
+};
 
 // TODO: Add will_properties and will_payload
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
@@ -94,33 +99,29 @@ impl ConnectPacket {
     pub fn decode<R: Read>(reader: &mut R) -> anyhow::Result<Self> {
         debug!("Decoding Connect packet");
 
-        let remaining_len = protocol::decode_variable_byte_int(reader)
-            .context("Failed to decode remaining length")?;
+        let remaining_len = decode_variable_byte_int(reader)?;
         debug!("Packet remaining_len: {}", remaining_len);
 
         // The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”
-        let protocol_name =
-            protocol::decode_utf8_string(reader).context("Failed to decode protocol name")?;
+        let protocol_name = decode_utf8_string(reader).context("Failed to decode protocol name")?;
         debug!("Packet protocol_name: {}", protocol_name);
 
-        if protocol_name != protocol::PROTOCOL_NAME {
+        if protocol_name != PROTOCOL_NAME {
             warn!("Unsupported protocol name: {}", protocol_name);
             anyhow::bail!("Unsupported Protocol Version")
         }
 
         // Represents the revision level of the protocol used by the Client
-        let protocol_version =
-            protocol::decode_u8(reader).context("Failed to decode protocol version")?;
+        let protocol_version = decode_u8(reader).context("Failed to decode protocol version")?;
         debug!("Packet protocol_version: {}", protocol_version);
 
-        if protocol_version != protocol::PROTOCOL_VERSION {
+        if protocol_version != PROTOCOL_VERSION {
             warn!("Unsupported protocol version: {}", protocol_version);
             anyhow::bail!("Unsupported Protocol Version")
         }
 
         // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
-        let connect_flags =
-            protocol::decode_u8(reader).context("Failed to decode connect flags")?;
+        let connect_flags = decode_u8(reader).context("Failed to decode connect flags")?;
         debug!("Packet connect_flags: {:08b}", connect_flags);
 
         // The Server MUST validate that the reserved flag in the CONNECT packet is set to 0
@@ -156,11 +157,11 @@ impl ConnectPacket {
             anyhow::bail!("Malformed packet")
         }
 
-        let keep_alive = protocol::decode_u16(reader).context("Failed to decode keep alive")?;
+        let keep_alive = decode_u16(reader).context("Failed to decode keep alive")?;
         debug!("Keep alive: {}", keep_alive);
 
-        let properties_len = protocol::decode_variable_byte_int(reader)
-            .context("Failed to decode properties len")?;
+        let properties_len =
+            decode_variable_byte_int(reader).context("Failed to decode properties len")?;
         debug!("Properties length: {}", properties_len);
 
         let (
@@ -179,8 +180,7 @@ impl ConnectPacket {
             _ => (None, None, None, None, None, None, None, None, None),
         };
 
-        let client_id =
-            protocol::decode_utf8_string(reader).context("Failed to decode client id")?;
+        let client_id = decode_utf8_string(reader).context("Failed to decode client id")?;
         debug!("Client identifier: {}", client_id);
 
         // If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid)
@@ -207,8 +207,7 @@ impl ConnectPacket {
         // TODO: Add will_properties and will_payload
 
         let will_topic = if will_flag {
-            let will_topic =
-                protocol::decode_utf8_string(reader).context("Failed to decode will topic")?;
+            let will_topic = decode_utf8_string(reader).context("Failed to decode will topic")?;
             debug!("Will topic: {}", will_topic);
             Some(will_topic)
         } else {
@@ -216,8 +215,7 @@ impl ConnectPacket {
         };
 
         let username = if username_flag {
-            let username =
-                protocol::decode_utf8_string(reader).context("Failed to decode username")?;
+            let username = decode_utf8_string(reader).context("Failed to decode username")?;
             debug!("Username: {}", username);
             Some(username)
         } else {
@@ -225,8 +223,7 @@ impl ConnectPacket {
         };
 
         let password = if password_flag {
-            let password =
-                protocol::decode_binary_data(reader).context("Failed to decode password")?;
+            let password = decode_binary_data(reader).context("Failed to decode password")?;
             debug!("Password decoded");
             Some(password)
         } else {

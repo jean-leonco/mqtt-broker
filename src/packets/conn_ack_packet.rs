@@ -4,9 +4,13 @@ use std::fmt;
 use anyhow::Context;
 use log::debug;
 
-use crate::protocol;
-
-use self::protocol::PacketType;
+use crate::protocol::{
+    mqtt_data::{
+        encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int, validate_utf8_string,
+    },
+    packet_type::PacketType,
+    MAX_PACKET_SIZE,
+};
 
 pub const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 pub const RECEIVE_MAXIMUM_IDENTIFIER: u8 = 0x21;
@@ -109,28 +113,28 @@ impl ConnectReasonCode {
 impl fmt::Display for ConnectReasonCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
-            ConnectReasonCode::Success => "Success",
-            ConnectReasonCode::UnspecifiedError => "UnspecifiedError",
-            ConnectReasonCode::MalformedPacket => "MalformedPacket",
-            ConnectReasonCode::ProtocolError => "ProtocolError",
-            ConnectReasonCode::ImplementationSpecificError => "ImplementationSpecificError",
-            ConnectReasonCode::UnsupportedProtocolVersion => "UnsupportedProtocolVersion",
-            ConnectReasonCode::ClientIdentifierNotValid => "ClientIdentifierNotValid",
-            ConnectReasonCode::BadUserNameOrPassword => "BadUserNameOrPassword",
-            ConnectReasonCode::NotAuthorized => "NotAuthorized",
-            ConnectReasonCode::ServerUnavailable => "ServerUnavailable",
-            ConnectReasonCode::ServerBusy => "ServerBusy",
-            ConnectReasonCode::Banned => "Banned",
-            ConnectReasonCode::BadAuthenticationMethod => "BadAuthenticationMethod",
-            ConnectReasonCode::TopicNameInvalid => "TopicNameInvalid",
-            ConnectReasonCode::PacketTooLarge => "PacketTooLarge",
-            ConnectReasonCode::QuotaExceeded => "QuotaExceeded",
-            ConnectReasonCode::PayloadFormatInvalid => "PayloadFormatInvalid",
-            ConnectReasonCode::RetainNotSupported => "RetainNotSupported",
-            ConnectReasonCode::QosNotSupported => "QosNotSupported",
-            ConnectReasonCode::UseAnotherServer => "UseAnotherServer",
-            ConnectReasonCode::ServerMoved => "ServerMoved",
-            ConnectReasonCode::ConnectionRateExceeded => "ConnectionRateExceeded",
+            Self::Success => "Success",
+            Self::UnspecifiedError => "Unspecified error",
+            Self::MalformedPacket => "Malformed packet",
+            Self::ProtocolError => "Protocol error",
+            Self::ImplementationSpecificError => "Implementation specific error",
+            Self::UnsupportedProtocolVersion => "Unsupported protocol version",
+            Self::ClientIdentifierNotValid => "Client identifier not valid",
+            Self::BadUserNameOrPassword => "Bad user name or password",
+            Self::NotAuthorized => "Not authorized",
+            Self::ServerUnavailable => "Server unavailable",
+            Self::ServerBusy => "Server busy",
+            Self::Banned => "Banned",
+            Self::BadAuthenticationMethod => "Bad authentication method",
+            Self::TopicNameInvalid => "Topic name invalid",
+            Self::PacketTooLarge => "Packet too large",
+            Self::QuotaExceeded => "Quota exceeded",
+            Self::PayloadFormatInvalid => "Payload format invalid",
+            Self::RetainNotSupported => "Retain not supported",
+            Self::QosNotSupported => "QoS not supported",
+            Self::UseAnotherServer => "Use another server",
+            Self::ServerMoved => "Server moved",
+            Self::ConnectionRateExceeded => "Connection rate exceeded",
         };
 
         write!(f, "{value}")
@@ -242,22 +246,22 @@ impl ConnAckPacket {
         authentication_data: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         if let Some(ref assigned_client_identifier) = assigned_client_identifier {
-            protocol::validate_utf8_string(assigned_client_identifier)
+            validate_utf8_string(assigned_client_identifier)
                 .context("assigned_client_identifier is not a valid utf8 string")?;
         }
 
         if let Some(ref reason_string) = reason_string {
-            protocol::validate_utf8_string(reason_string)
+            validate_utf8_string(reason_string)
                 .context("reason_string is not a valid utf8 string")?;
         }
 
         if let Some(ref response_information) = response_information {
-            protocol::validate_utf8_string(response_information)
+            validate_utf8_string(response_information)
                 .context("response_information is not a valid utf8 string")?;
         }
 
         if let Some(ref server_reference) = server_reference {
-            protocol::validate_utf8_string(server_reference)
+            validate_utf8_string(server_reference)
                 .context("server_reference is not a valid utf8 string")?;
 
             if !(matches!(
@@ -273,7 +277,7 @@ impl ConnAckPacket {
         }
 
         if let Some(ref authentication_method) = authentication_method {
-            protocol::validate_utf8_string(authentication_method)
+            validate_utf8_string(authentication_method)
                 .context("authentication_method is not a valid utf8 string")?;
         }
 
@@ -317,7 +321,7 @@ impl ConnAckPacket {
         let remaining_len = u32::try_from(self.remaining_len).with_context(|| {
             format!("Failed to cast remaining length {} to u32", self.remaining_len)
         })?;
-        let encoded_remaining_len = protocol::encode_variable_byte_int(remaining_len);
+        let encoded_remaining_len = encode_variable_byte_int(remaining_len);
 
         let control_byte = PacketType::ConnAck.control_byte();
 
@@ -370,7 +374,7 @@ impl ConnAckPacket {
         if let Some(assigned_client_identifier) = &self.assigned_client_identifier {
             properties.push(ASSIGNED_CLIENT_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(assigned_client_identifier)
+                encode_utf8_string(assigned_client_identifier)
                     .context("Failed to encode assigned_client_identifier")?,
             );
         }
@@ -385,8 +389,7 @@ impl ConnAckPacket {
         if let Some(reason_string) = &self.reason_string {
             properties.push(REASON_STRING_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(reason_string)
-                    .context("Failed to encode reason_string")?,
+                encode_utf8_string(reason_string).context("Failed to encode reason_string")?,
             );
         }
 
@@ -394,8 +397,7 @@ impl ConnAckPacket {
         if let Some(reason_string) = &self.reason_string {
             properties.push(REASON_STRING_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(reason_string)
-                    .context("Failed to encode reason_string")?,
+                encode_utf8_string(reason_string).context("Failed to encode reason_string")?,
             );
         }
 
@@ -404,7 +406,7 @@ impl ConnAckPacket {
             for user_property in user_properties {
                 properties.push(USER_PROPERTY_IDENTIFIER);
                 properties.extend(
-                    protocol::encode_utf8_string_pair(user_property)
+                    encode_utf8_string_pair(user_property)
                         .context("Failed to encode user_property")?,
                 );
             }
@@ -446,7 +448,7 @@ impl ConnAckPacket {
         if let Some(response_information) = &self.response_information {
             properties.push(RESPONSE_INFORMATION_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(response_information)
+                encode_utf8_string(response_information)
                     .context("Failed to encode response_information")?,
             );
         }
@@ -455,7 +457,7 @@ impl ConnAckPacket {
         if let Some(server_reference) = &self.server_reference {
             properties.push(SERVER_REFERENCE_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(server_reference)
+                encode_utf8_string(server_reference)
                     .context("Failed to encode server_reference")?,
             );
         }
@@ -464,7 +466,7 @@ impl ConnAckPacket {
         if let Some(authentication_method) = &self.authentication_method {
             properties.push(AUTHENTICATION_METHOD_IDENTIFIER);
             properties.extend(
-                protocol::encode_utf8_string(authentication_method)
+                encode_utf8_string(authentication_method)
                     .context("Failed to encode authentication_method")?,
             );
         }
@@ -478,7 +480,7 @@ impl ConnAckPacket {
         let properties_len = u32::try_from(properties.len()).with_context(|| {
             format!("Failed to cast properties_len {} to u32", properties.len())
         })?;
-        let properties_len = protocol::encode_variable_byte_int(properties_len);
+        let properties_len = encode_variable_byte_int(properties_len);
 
         // Remaining Length: Acknowledge Flags + Reason Code + Property length + Properties
         self.remaining_len += 1 + 1 + properties_len.len() + properties.len();
@@ -500,10 +502,10 @@ impl ConnAckPacket {
         packet.extend(properties);
 
         // Ensure the packet isn't larger than the MAX_PACKET_SIZE
-        if packet.len() > protocol::MAX_PACKET_SIZE {
+        if packet.len() > MAX_PACKET_SIZE {
             anyhow::bail!(
             "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
-            packet.len(), protocol::MAX_PACKET_SIZE
+            packet.len(), MAX_PACKET_SIZE
         );
         }
 
