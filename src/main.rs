@@ -1,17 +1,15 @@
 use std::{
-    io::{BufReader, Write},
+    io::BufReader,
     net::{TcpListener, TcpStream},
 };
 
+pub(crate) mod handlers;
 pub(crate) mod packets;
 pub(crate) mod protocol;
 
 use anyhow::{Context, Ok};
+use handlers::connect_handler;
 use log::{debug, error, info};
-use packets::{
-    conn_ack_packet::{ConnAckPacket, ConnectReasonCode},
-    connect_packet::ConnectPacket,
-};
 use protocol::{decoding, packet_type::PacketType};
 
 fn main() -> anyhow::Result<()> {
@@ -50,43 +48,7 @@ fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
     // TODO: Handle Malformed packet: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#S4_13_Errors
     match PacketType::from_u8(packet_type) {
         Some(packet_type) => match packet_type {
-            PacketType::Connect => {
-                let packet = ConnectPacket::decode(&mut reader)
-                    .context("Failed to decode Connect packet")?;
-                debug!("Connect packet: {:?}", packet);
-
-                let mut response_packet = ConnAckPacket::new(
-                    false,
-                    ConnectReasonCode::Success,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .context("Failed to create ConnAck packet")?;
-                debug!("ConnAck packet: {:?}", response_packet);
-
-                let encoded_response_packet =
-                    response_packet.encode().context("Failed to encode ConnAck packet")?;
-
-                info!("Sending ConnAck packet to the client");
-                writer
-                    .write_all(&encoded_response_packet)
-                    .context("Failed to write ConnAck packet")?;
-            }
+            PacketType::Connect => connect_handler::handle_connect(&mut reader, &mut writer)?,
             // Packet type not implemented
             _ => anyhow::bail!("Packet type {} not implemented", packet_type),
         },

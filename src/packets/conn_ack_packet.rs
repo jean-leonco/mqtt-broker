@@ -7,7 +7,6 @@ use log::debug;
 use crate::protocol::{
     encoding::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int},
     packet_type::PacketType,
-    validation::validate_utf8_string,
     MAX_PACKET_SIZE,
 };
 
@@ -33,6 +32,7 @@ pub const AUTHENTICATION_DATA_IDENTIFIER: u8 = 0x16;
 /// to connect to an MQTT server. Each variant corresponds to a specific
 /// connection outcome or error.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) enum ConnectReasonCode {
     /// Success Connection is accepted.
     Success = 0x00,
@@ -169,10 +169,10 @@ pub(crate) struct ConnAckPacket {
     /// Session Expiry Interval in seconds.
     session_expiry_interval: Option<u32>,
 
-    /// The Server uses this value to limit the number of QoS 1 and QoS 2 publications that it is willing to process concurrently for the Client. It does not provide a mechanism to limit the QoS 0 publications that the Client might try to send.
+    /// The Server uses this value to limit the number of `QoS` 1 and `QoS` 2 publications that it is willing to process concurrently for the Client. It does not provide a mechanism to limit the `QoS` 0 publications that the Client might try to send.
     receive_maximum: Option<u16>,
 
-    /// If a Server does not support QoS 1 or QoS 2 PUBLISH packets it MUST send a Maximum QoS in the CONNACK packet specifying the highest QoS it supports.
+    /// If a Server does not support `QoS` 1 or `QoS` 2 PUBLISH packets it MUST send a Maximum `QoS` in the CONNACK packet specifying the highest `QoS` it supports.
     maximum_qos: Option<MaximumQos>,
 
     /// If present, this byte declares whether the Server supports retained messages. A value of 0 means that retained messages are not supported. A value of 1 means retained messages are supported. If not present, then retained messages are supported.
@@ -222,86 +222,70 @@ pub(crate) struct ConnAckPacket {
     remaining_len: usize,
 }
 
-impl ConnAckPacket {
-    pub fn new(
-        session_present: bool,
-        reason_code: ConnectReasonCode,
-        session_expiry_interval: Option<u32>,
-        receive_maximum: Option<u16>,
-        maximum_qos: Option<MaximumQos>,
-        retain_available: Option<bool>,
-        maximum_packet_size: Option<u32>,
-        assigned_client_identifier: Option<String>,
-        topic_alias_maximum: Option<u16>,
-        reason_string: Option<String>,
-        user_properties: Option<HashMap<String, String>>,
-        wildcard_subscription_available: Option<bool>,
-        subscription_identifiers_available: Option<bool>,
-        shared_subscription_available: Option<bool>,
-        server_keep_alive: Option<u16>,
-        response_information: Option<String>,
-        server_reference: Option<String>,
-        authentication_method: Option<String>,
-        authentication_data: Option<Vec<u8>>,
-    ) -> anyhow::Result<Self> {
-        if let Some(ref assigned_client_identifier) = assigned_client_identifier {
-            validate_utf8_string(assigned_client_identifier)
-                .context("assigned_client_identifier is not a valid utf8 string")?;
-        }
+pub struct ConnAckPacketBuilder<State>(State);
 
-        if let Some(ref reason_string) = reason_string {
-            validate_utf8_string(reason_string)
-                .context("reason_string is not a valid utf8 string")?;
-        }
+pub struct NeedsSessionPresent(());
 
-        if let Some(ref response_information) = response_information {
-            validate_utf8_string(response_information)
-                .context("response_information is not a valid utf8 string")?;
-        }
+pub struct NeedsReasonCode {
+    session_present: bool,
+}
 
-        if let Some(ref server_reference) = server_reference {
-            validate_utf8_string(server_reference)
-                .context("server_reference is not a valid utf8 string")?;
+pub struct ReadyToBuild {
+    session_present: bool,
+    reason_code: ConnectReasonCode,
+    reason_string: Option<String>,
+}
 
-            if !(matches!(
-                reason_code,
-                ConnectReasonCode::UseAnotherServer | ConnectReasonCode::ServerMoved
-            )) {
-                anyhow::bail!(
-                    "Expected reason_code to be {} or {}. Got {reason_code}",
-                    ConnectReasonCode::UseAnotherServer,
-                    ConnectReasonCode::ServerMoved
-                );
-            }
-        }
+impl ConnAckPacketBuilder<NeedsSessionPresent> {
+    pub fn session_present(self, session_present: bool) -> ConnAckPacketBuilder<NeedsReasonCode> {
+        ConnAckPacketBuilder(NeedsReasonCode { session_present })
+    }
+}
 
-        if let Some(ref authentication_method) = authentication_method {
-            validate_utf8_string(authentication_method)
-                .context("authentication_method is not a valid utf8 string")?;
-        }
-
-        Ok(Self {
-            session_present,
+impl ConnAckPacketBuilder<NeedsReasonCode> {
+    pub fn reason_code(self, reason_code: ConnectReasonCode) -> ConnAckPacketBuilder<ReadyToBuild> {
+        ConnAckPacketBuilder(ReadyToBuild {
+            session_present: self.0.session_present,
             reason_code,
-            session_expiry_interval,
-            receive_maximum,
-            maximum_qos,
-            retain_available,
-            maximum_packet_size,
-            assigned_client_identifier,
-            topic_alias_maximum,
-            reason_string,
-            user_properties,
-            wildcard_subscription_available,
-            subscription_identifiers_available,
-            shared_subscription_available,
-            server_keep_alive,
-            response_information,
-            server_reference,
-            authentication_method,
-            authentication_data,
-            remaining_len: 0,
+            reason_string: None,
         })
+    }
+}
+
+impl ConnAckPacketBuilder<ReadyToBuild> {
+    pub fn reason_string(self, reason_string: String) -> ConnAckPacketBuilder<ReadyToBuild> {
+        ConnAckPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
+    }
+
+    pub fn build(self) -> ConnAckPacket {
+        ConnAckPacket {
+            session_present: self.0.session_present,
+            reason_code: self.0.reason_code,
+            session_expiry_interval: None,
+            receive_maximum: None,
+            maximum_qos: None,
+            retain_available: None,
+            maximum_packet_size: None,
+            assigned_client_identifier: None,
+            topic_alias_maximum: Some(u16::MAX),
+            reason_string: self.0.reason_string,
+            user_properties: None,
+            wildcard_subscription_available: None,
+            subscription_identifiers_available: None,
+            shared_subscription_available: None,
+            server_keep_alive: None,
+            response_information: None,
+            server_reference: None,
+            authentication_method: None,
+            authentication_data: None,
+            remaining_len: 0,
+        }
+    }
+}
+
+impl ConnAckPacket {
+    pub fn builder() -> ConnAckPacketBuilder<NeedsSessionPresent> {
+        ConnAckPacketBuilder(NeedsSessionPresent(()))
     }
 
     /// Encode the fixed header for the control packet.
@@ -382,14 +366,6 @@ impl ConnAckPacket {
         if let Some(topic_alias_maximum) = &self.topic_alias_maximum {
             properties.push(TOPIC_ALIAS_MAXIMUM_IDENTIFIER);
             properties.extend(topic_alias_maximum.to_be_bytes());
-        }
-
-        // Add Reason String if present
-        if let Some(reason_string) = &self.reason_string {
-            properties.push(REASON_STRING_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(reason_string).context("Failed to encode reason_string")?,
-            );
         }
 
         // Add Reason String if present

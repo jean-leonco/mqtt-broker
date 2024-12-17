@@ -2,7 +2,7 @@ use anyhow::Context;
 use log::debug;
 use std::{collections::HashMap, fmt};
 
-use crate::protocol::{encoding, packet_type::PacketType, validation, MAX_PACKET_SIZE};
+use crate::protocol::{encoding, packet_type::PacketType, MAX_PACKET_SIZE};
 
 const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
@@ -215,27 +215,6 @@ impl DisconnectPacket {
         user_properties: Option<HashMap<String, String>>,
         server_reference: Option<String>,
     ) -> anyhow::Result<Self> {
-        if let Some(ref reason_string) = reason_string {
-            validation::validate_utf8_string(reason_string)
-                .context("reason_string is not a valid utf8 string")?;
-        }
-
-        if let Some(ref server_reference) = server_reference {
-            validation::validate_utf8_string(server_reference)
-                .context("server_reference is not a valid utf8 string")?;
-
-            if !(matches!(
-                reason_code,
-                DisconnectReasonCode::UseAnotherServer | DisconnectReasonCode::ServerMoved
-            )) {
-                anyhow::bail!(
-                    "Expected reason_code to be {} or {}. Got {reason_code}",
-                    DisconnectReasonCode::UseAnotherServer,
-                    DisconnectReasonCode::ServerMoved
-                );
-            }
-        }
-
         Ok(Self {
             reason_code,
             session_expiry_interval,

@@ -1,19 +1,6 @@
-use std::{error::Error, fmt, io::Read};
+use std::io::Read;
 
-/// Data within the packet could not be correctly parsed.
-#[derive(Debug)]
-pub struct MalformedPacketError(Option<String>);
-
-impl fmt::Display for MalformedPacketError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match Some(self) {
-            Some(reason) => write!(f, "Malformed packet: {reason}"),
-            None => write!(f, "Malformed packet"),
-        }
-    }
-}
-
-impl Error for MalformedPacketError {}
+use super::MalformedPacketError;
 
 /// Decode a variable byte integer.
 ///
@@ -47,7 +34,7 @@ pub(crate) fn decode_variable_byte_int<R: Read>(
     loop {
         // Read next byte
         reader.read_exact(&mut encoded_byte).map_err(|_| {
-            MalformedPacketError(Some("Unable to read variable byte integer".into()))
+            MalformedPacketError("Unable to read variable byte integer".to_string())
         })?;
 
         // Take the 7 least significant bits
@@ -57,7 +44,7 @@ pub(crate) fn decode_variable_byte_int<R: Read>(
 
         // Ensure multiplier does not exceed the specification limits
         if multiplier > 128 * 128 * 128 {
-            return Err(MalformedPacketError(Some("Malformed variable byte integer".into())));
+            return Err(MalformedPacketError("Malformed variable byte integer".to_string()));
         }
 
         multiplier *= 128;
@@ -83,16 +70,16 @@ pub(crate) fn decode_variable_byte_int<R: Read>(
 /// - Returns `CommonDecodeError::MalformedPacket` if reading fails or string is invalid UTF-8.
 pub(crate) fn decode_utf8_string<R: Read>(reader: &mut R) -> Result<String, MalformedPacketError> {
     let len = decode_u16(reader)
-        .map_err(|_| MalformedPacketError(Some("Failed to read UTF-8 string length".into())))?
+        .map_err(|_| MalformedPacketError("Failed to read UTF-8 string length".to_string()))?
         as usize;
 
     let mut encoded_value = vec![0; len];
     reader
         .read_exact(&mut encoded_value)
-        .map_err(|_| MalformedPacketError(Some("Failed to read UTF-8 string data".into())))?;
+        .map_err(|_| MalformedPacketError("Failed to read UTF-8 string data".to_string()))?;
 
     String::from_utf8(encoded_value)
-        .map_err(|_| MalformedPacketError(Some("String is not valid UTF-8".into())))
+        .map_err(|_| MalformedPacketError("String is not valid UTF-8".to_string()))
 }
 
 /// Decode binary data.
@@ -106,13 +93,13 @@ pub(crate) fn decode_utf8_string<R: Read>(reader: &mut R) -> Result<String, Malf
 /// - Returns `CommonDecodeError::MalformedPacket` if reading fails.
 pub(crate) fn decode_binary_data<R: Read>(reader: &mut R) -> Result<Vec<u8>, MalformedPacketError> {
     let len = decode_u16(reader)
-        .map_err(|_| MalformedPacketError(Some("Failed to read binary data length".into())))?
+        .map_err(|_| MalformedPacketError("Failed to read binary data length".to_string()))?
         as usize;
 
     let mut decoded_value = vec![0; len];
     reader
         .read_exact(&mut decoded_value)
-        .map_err(|_| MalformedPacketError(Some("Failed to read binary data".into())))?;
+        .map_err(|_| MalformedPacketError("Failed to read binary data".to_string()))?;
 
     Ok(decoded_value)
 }
@@ -127,7 +114,7 @@ pub(crate) fn decode_u8<R: Read>(reader: &mut R) -> Result<u8, MalformedPacketEr
     let mut decoded_value = [0; 1];
     reader
         .read_exact(&mut decoded_value)
-        .map_err(|_| MalformedPacketError(Some("Failed to read u8".into())))?;
+        .map_err(|_| MalformedPacketError("Failed to read u8".to_string()))?;
 
     Ok(decoded_value[0])
 }
@@ -142,7 +129,7 @@ pub(crate) fn decode_u16<R: Read>(reader: &mut R) -> Result<u16, MalformedPacket
     let mut decoded_value = [0; 2];
     reader
         .read_exact(&mut decoded_value)
-        .map_err(|_| MalformedPacketError(Some("Failed to read u16".into())))?;
+        .map_err(|_| MalformedPacketError("Failed to read u16".to_string()))?;
 
     Ok(u16::from_be_bytes(decoded_value))
 }

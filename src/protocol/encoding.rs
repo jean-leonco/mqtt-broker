@@ -1,5 +1,7 @@
 use anyhow::Context;
 
+use super::MAX_STRING_LENGTH;
+
 /// Encode a variable byte integer.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
@@ -59,15 +61,17 @@ pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
 /// # Errors
 /// - Returns an error if the string length exceeds the maximum allowed.
 pub(crate) fn encode_utf8_string(value: &str) -> anyhow::Result<Vec<u8>> {
-    // MQTT requires that the length of the string must fit within 2 bytes (0 to 65_535).
     let len = value.len();
-    let casted_len = u16::try_from(len).context("String length exceeds the maximum allowed")?;
+
+    if len > MAX_STRING_LENGTH {
+        anyhow::bail!("String length exceeds the maximum allowed")
+    }
 
     // Allocate a buffer with sufficient capacity:
     // - 2 bytes for the length field
     // - `len` bytes for the UTF-8 encoded string
     let mut encoded_value = Vec::with_capacity(2 + len);
-    encoded_value.extend(casted_len.to_be_bytes());
+    encoded_value.extend(len.to_be_bytes());
     encoded_value.extend(value.as_bytes());
 
     Ok(encoded_value)

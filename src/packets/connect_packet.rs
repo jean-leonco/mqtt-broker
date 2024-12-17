@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::Read};
 use anyhow::Context;
 use log::{debug, warn};
 
-use crate::protocol::{decoding, PROTOCOL_NAME, PROTOCOL_VERSION};
+use crate::protocol::decoding;
 
 // TODO: Add will_properties and will_payload
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
@@ -11,10 +11,10 @@ use crate::protocol::{decoding, PROTOCOL_NAME, PROTOCOL_VERSION};
 #[allow(dead_code)]
 pub(crate) struct ConnectPacket {
     /// The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”.
-    protocol_name: String,
+    pub protocol_name: String,
 
     /// Represents the revision level of the protocol used by the Client. The value of the Protocol Version field for version 5.0 of the protocol is 5 (0x05).
-    protocol_version: u8,
+    pub protocol_version: u8,
 
     /// Specifies whether the Connection starts a new Session or is a continuation of an existing Session.
     clean_start: bool,
@@ -27,12 +27,6 @@ pub(crate) struct ConnectPacket {
 
     /// Specifies if the Will Message is to be retained when it is published.
     will_retain: bool,
-
-    /// Specifies if the username is present in the payload.
-    username_flag: bool,
-
-    /// Specifies if the password is present in the payload.
-    password_flag: bool,
 
     /// Keep alive time interval measured in seconds.
     ///
@@ -77,7 +71,7 @@ pub(crate) struct ConnectPacket {
     authentication_data: Option<Vec<u8>>,
 
     /// The Client Identifier (`ClientID`) identifies the Client to the Server. Each Client connecting to the Server has a unique `ClientID`.
-    client_id: String,
+    pub client_id: String,
 
     /// The will topic.
     will_topic: Option<String>,
@@ -102,20 +96,10 @@ impl ConnectPacket {
             decoding::decode_utf8_string(reader).context("Failed to decode protocol name")?;
         debug!("Packet protocol_name: {}", protocol_name);
 
-        if protocol_name != PROTOCOL_NAME {
-            warn!("Unsupported protocol name: {}", protocol_name);
-            anyhow::bail!("Unsupported Protocol Version")
-        }
-
         // Represents the revision level of the protocol used by the Client
         let protocol_version =
             decoding::decode_u8(reader).context("Failed to decode protocol version")?;
         debug!("Packet protocol_version: {}", protocol_version);
-
-        if protocol_version != PROTOCOL_VERSION {
-            warn!("Unsupported protocol version: {}", protocol_version);
-            anyhow::bail!("Unsupported Protocol Version")
-        }
 
         // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
         let connect_flags =
@@ -182,27 +166,6 @@ impl ConnectPacket {
             decoding::decode_utf8_string(reader).context("Failed to decode client id")?;
         debug!("Client identifier: {}", client_id);
 
-        // If the Server rejects the ClientID it MAY respond to the CONNECT packet with a CONNACK using Reason Code 0x85 (Client Identifier not valid)
-        if client_id.is_empty() {
-            warn!("Client Identifier is empty");
-            anyhow::bail!("Client Identifier not valid")
-        }
-
-        // The Server MUST allow ClientID’s which are between 1 and 23 UTF-8 encoded bytes in length
-        if client_id.len() > 23 {
-            warn!(
-                "Client Identifier too large. Expected value between 1 and 23 bytes. Got {} bytes",
-                client_id.len()
-            );
-            anyhow::bail!("Client Identifier not valid")
-        }
-
-        // The Server MUST allow ClientID’s which contain only the characters "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
-        if !client_id.chars().all(char::is_alphanumeric) {
-            warn!("Client Identifier contains invalid characters. Expected alphanumeric value");
-            anyhow::bail!("Client Identifier not valid")
-        }
-
         // TODO: Add will_properties and will_payload
 
         let will_topic = if will_flag {
@@ -239,8 +202,6 @@ impl ConnectPacket {
             will_flag,
             qos_level,
             will_retain,
-            username_flag,
-            password_flag,
             keep_alive,
             session_expiry_interval,
             receive_maximum,
