@@ -1,7 +1,7 @@
 use std::fmt;
 
 /// Represents the MQTT Control Packet Types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum PacketType {
     /// Connection request.
     /// Sent by: Client to Server.

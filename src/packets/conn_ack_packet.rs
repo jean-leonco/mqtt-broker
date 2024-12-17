@@ -5,10 +5,9 @@ use anyhow::Context;
 use log::debug;
 
 use crate::protocol::{
-    mqtt_data::{
-        encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int, validate_utf8_string,
-    },
+    encoding::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int},
     packet_type::PacketType,
+    validation::validate_utf8_string,
     MAX_PACKET_SIZE,
 };
 
@@ -358,7 +357,7 @@ impl ConnAckPacket {
 
         // Add Retain available if present
         if let Some(retain_available) = self.retain_available {
-            let retain_available = if retain_available { 1 } else { 0 };
+            let retain_available = u8::from(retain_available);
 
             properties.push(RETAIN_AVAILABLE_IDENTIFIER);
             properties.push(retain_available);
@@ -414,8 +413,7 @@ impl ConnAckPacket {
 
         // Add Wildcard Subscription Available if present
         if let Some(wildcard_subscription_available) = self.wildcard_subscription_available {
-            let wildcard_subscription_available =
-                if wildcard_subscription_available { 1 } else { 0 };
+            let wildcard_subscription_available = u8::from(wildcard_subscription_available);
 
             properties.push(WILDCARD_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
             properties.push(wildcard_subscription_available);
@@ -423,8 +421,7 @@ impl ConnAckPacket {
 
         // Add Subscription Identifiers Available if present
         if let Some(subscription_identifiers_available) = self.subscription_identifiers_available {
-            let subscription_identifiers_available =
-                if subscription_identifiers_available { 1 } else { 0 };
+            let subscription_identifiers_available = u8::from(subscription_identifiers_available);
 
             properties.push(SUBSCRIPTION_IDENTIFIERS_AVAILABLE_IDENTIFIER);
             properties.push(subscription_identifiers_available);
@@ -432,7 +429,7 @@ impl ConnAckPacket {
 
         // Add Shared Subscription Available if present
         if let Some(shared_subscription_available) = self.shared_subscription_available {
-            let shared_subscription_available = if shared_subscription_available { 1 } else { 0 };
+            let shared_subscription_available = u8::from(shared_subscription_available);
 
             properties.push(SHARED_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
             properties.push(shared_subscription_available);
@@ -491,7 +488,7 @@ impl ConnAckPacket {
 
         // Byte 1 is the "Connect Acknowledge Flags". Bits 7-1 are reserved and MUST be set to 0
         // Bit 0 is the Session Present Flag.
-        let acknowledge_flags = if self.session_present { 1 } else { 0 };
+        let acknowledge_flags = u8::from(self.session_present);
 
         // Build packet: Fixed header + Acknowledge Flags + Reason Code + Property length + Properties
         let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);

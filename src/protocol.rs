@@ -1,8 +1,7 @@
-use std::error::Error;
-use std::fmt;
-
-pub(crate) mod mqtt_data;
+pub(crate) mod decoding;
+pub(crate) mod encoding;
 pub(crate) mod packet_type;
+pub(crate) mod validation;
 
 /// Protocol name.
 pub(crate) const PROTOCOL_NAME: &str = "MQTT";

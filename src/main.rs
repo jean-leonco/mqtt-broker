@@ -12,7 +12,7 @@ use packets::{
     conn_ack_packet::{ConnAckPacket, ConnectReasonCode},
     connect_packet::ConnectPacket,
 };
-use protocol::{mqtt_data::decode_u8, packet_type::PacketType};
+use protocol::{decoding, packet_type::PacketType};
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -42,7 +42,7 @@ fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
     let mut writer = stream.try_clone().context("Failed to clone writer stream")?;
     let mut reader = BufReader::new(stream);
 
-    let fixed_header = decode_u8(&mut reader).context("Failed to read fixed header")?;
+    let fixed_header = decoding::decode_u8(&mut reader).context("Failed to read fixed header")?;
 
     let packet_type = fixed_header >> 4;
     debug!("Received packet_type: {packet_type}");
