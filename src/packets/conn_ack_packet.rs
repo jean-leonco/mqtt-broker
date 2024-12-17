@@ -29,7 +29,7 @@ pub const AUTHENTICATION_DATA_IDENTIFIER: u8 = 0x16;
 /// Represents the possible reason codes returned when attempting
 /// to connect to an MQTT server. Each variant corresponds to a specific
 /// connection outcome or error.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ConnectReasonCode {
     /// Success Connection is accepted.
     Success = 0x00,
@@ -97,6 +97,13 @@ pub(crate) enum ConnectReasonCode {
 
     /// The connection rate limit has been exceeded.
     ConnectionRateExceeded = 0x9F,
+}
+
+impl ConnectReasonCode {
+    /// Converts the `ConnectReasonCode` to its numeric value.
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 impl fmt::Display for ConnectReasonCode {
@@ -473,8 +480,8 @@ impl ConnAckPacket {
         })?;
         let properties_len = protocol::encode_variable_byte_int(properties_len);
 
-        // Remaining Length: Acknowledge Flags + Property length + Properties
-        self.remaining_len += 1 + properties_len.len() + properties.len();
+        // Remaining Length: Acknowledge Flags + Reason Code + Property length + Properties
+        self.remaining_len += 1 + 1 + properties_len.len() + properties.len();
         debug!("remaining_len: {}", self.remaining_len);
 
         let fixed_header =
@@ -484,10 +491,11 @@ impl ConnAckPacket {
         // Bit 0 is the Session Present Flag.
         let acknowledge_flags = if self.session_present { 1 } else { 0 };
 
-        // Build packet: Fixed header + Acknowledge Flags + Property length + Properties
+        // Build packet: Fixed header + Acknowledge Flags + Reason Code + Property length + Properties
         let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);
         packet.extend(fixed_header);
         packet.push(acknowledge_flags);
+        packet.push(self.reason_code.to_u8());
         packet.extend(properties_len);
         packet.extend(properties);
 
