@@ -1,14 +1,15 @@
-use std::{collections::HashMap, io::Read};
+use std::{collections::HashMap, io::Cursor};
 
-use anyhow::Context;
-use log::{debug, warn};
+use bytes::{Buf, BytesMut};
 
-use crate::protocol::decoding;
+use crate::{
+    codec::{decode_binary_data, decode_utf8_string, decode_variable_byte_int},
+    connection::PacketError,
+    constants::{PROTOCOL_NAME, PROTOCOL_VERSION},
+};
 
-// TODO: Add will_properties and will_payload
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct ConnectPacket {
     /// The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”.
     pub protocol_name: String,
@@ -17,10 +18,7 @@ pub(crate) struct ConnectPacket {
     pub protocol_version: u8,
 
     /// Specifies whether the Connection starts a new Session or is a continuation of an existing Session.
-    clean_start: bool,
-
-    /// If the Will Flag is set to 1 this indicates that a Will Message MUST be stored on the Server and associated with the Session.
-    will_flag: bool,
+    pub clean_start: bool,
 
     /// Specifies the `QoS` level to be used when publishing the Will Message.
     qos_level: u8,
@@ -31,12 +29,12 @@ pub(crate) struct ConnectPacket {
     /// Keep alive time interval measured in seconds.
     ///
     /// It is the maximum time interval that is permitted to elapse between the point at which the Client finishes transmitting one MQTT Control Packet and the point it starts sending the next.
-    keep_alive: u16,
+    pub keep_alive: u16,
 
     /// Session Expiry Interval in seconds.
     ///
     /// If the Session Expiry Interval is 0xFFFFFFFF (`UINT_MAX`), the Session does not expire.
-    session_expiry_interval: Option<u32>,
+    pub session_expiry_interval: Option<u32>,
 
     /// The Client uses this value to limit the number of `QoS` 1 and `QoS` 2 publications that it is willing to process concurrently. There is no mechanism to limit the `QoS` 0 publications that the Server might try to send.
     ///
@@ -68,7 +66,7 @@ pub(crate) struct ConnectPacket {
     authentication_method: Option<String>,
 
     /// The contents of this data are defined by the authentication method.
-    authentication_data: Option<Vec<u8>>,
+    authentication_data: Option<BytesMut>,
 
     /// The Client Identifier (`ClientID`) identifies the Client to the Server. Each Client connecting to the Server has a unique `ClientID`.
     pub client_id: String,
@@ -80,36 +78,34 @@ pub(crate) struct ConnectPacket {
     username: Option<String>,
 
     /// Although this field is called Password, it can be used to carry any credential information.
-    password: Option<Vec<u8>>,
+    password: Option<BytesMut>,
+}
+
+#[derive(Debug)]
+pub(crate) enum DecodeError {
+    PacketError(PacketError),
+    UnsupportedProtocolVersion,
+    ClientIdentifierNotValid,
 }
 
 impl ConnectPacket {
     /// Decode a input reader into the `ConnectPacket`.
-    pub fn decode<R: Read>(reader: &mut R) -> anyhow::Result<Self> {
-        debug!("Decoding Connect packet");
+    pub fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        let protocol_name = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+        if protocol_name != PROTOCOL_NAME {
+            return Err(DecodeError::UnsupportedProtocolVersion);
+        }
 
-        let remaining_len = decoding::decode_variable_byte_int(reader)?;
-        debug!("Packet remaining_len: {}", remaining_len);
+        let protocol_version = buf.get_u8();
+        if protocol_version != PROTOCOL_VERSION {
+            return Err(DecodeError::UnsupportedProtocolVersion);
+        }
 
-        // The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”
-        let protocol_name =
-            decoding::decode_utf8_string(reader).context("Failed to decode protocol name")?;
-        debug!("Packet protocol_name: {}", protocol_name);
-
-        // Represents the revision level of the protocol used by the Client
-        let protocol_version =
-            decoding::decode_u8(reader).context("Failed to decode protocol version")?;
-        debug!("Packet protocol_version: {}", protocol_version);
-
-        // The Connect Flags byte contains several parameters specifying the behavior of the MQTT connection. It also indicates the presence or absence of fields in the Payload
-        let connect_flags =
-            decoding::decode_u8(reader).context("Failed to decode connect flags")?;
-        debug!("Packet connect_flags: {:08b}", connect_flags);
+        let connect_flags = buf.get_u8();
 
         // The Server MUST validate that the reserved flag in the CONNECT packet is set to 0
         if connect_flags & 1 != 0 {
-            warn!("Malformed packet: reserved flag set in packet");
-            anyhow::bail!("Malformed packet")
+            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
         }
 
         let clean_start = (connect_flags >> 1) & 1 == 1;
@@ -121,30 +117,22 @@ impl ConnectPacket {
 
         // If the Will Flag is set to 0, then Will Retain MUST be set to 0
         if !will_flag && will_retain {
-            warn!("Malformed packet: will_flag is 0 but will_retain is set");
-            anyhow::bail!("Malformed packet")
+            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
         }
 
-        // If the Will Flag is set to 0, then the Will QoS MUST be set to 0 (0x00)
+        // If the Will Flag is set to 0, then the Will QoS MUST be set to 0
         if !will_flag && qos_level != 0 {
-            warn!(
-                "Malformed packet: Invalid will_qos when will_flag is disabled or QoS out of range"
-            );
-            anyhow::bail!("Malformed packet")
+            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
         }
 
-        // If the Will Flag is set to 1, the value of Will QoS can be 0 (0x00), 1 (0x01), or 2 (0x02). A value of 3 (0x03) is a Malformed Packet
+        // If the Will Flag is set to 1, the value of Will QoS can be 0, 1, or 2. A value of 3 is a Malformed Packet
         if qos_level > 2 {
-            warn!("Malformed packet: will_qos out of range");
-            anyhow::bail!("Malformed packet")
+            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
         }
 
-        let keep_alive = decoding::decode_u16(reader).context("Failed to decode keep alive")?;
-        debug!("Keep alive: {}", keep_alive);
+        let keep_alive = buf.get_u16();
 
-        let properties_len = decoding::decode_variable_byte_int(reader)
-            .context("Failed to decode properties len")?;
-        debug!("Properties length: {}", properties_len);
+        let properties_len = decode_variable_byte_int(buf).map_err(DecodeError::PacketError)?;
 
         let (
             session_expiry_interval,
@@ -158,38 +146,40 @@ impl ConnectPacket {
             authentication_data,
         ) = match properties_len {
             0 => (None, None, None, None, None, None, None, None, None),
-            // TODO: Decode properties
-            _ => (None, None, None, None, None, None, None, None, None),
+            _ => {
+                // TODO: Decode properties
+                buf.advance(properties_len);
+                (None, None, None, None, None, None, None, None, None)
+            }
         };
 
-        let client_id =
-            decoding::decode_utf8_string(reader).context("Failed to decode client id")?;
-        debug!("Client identifier: {}", client_id);
+        let client_id = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+
+        if client_id.is_empty()
+            || client_id.len() > 23
+            || !client_id.chars().all(char::is_alphanumeric)
+        {
+            return Err(DecodeError::ClientIdentifierNotValid);
+        }
 
         // TODO: Add will_properties and will_payload
 
         let will_topic = if will_flag {
-            let will_topic =
-                decoding::decode_utf8_string(reader).context("Failed to decode will topic")?;
-            debug!("Will topic: {}", will_topic);
+            let will_topic = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
             Some(will_topic)
         } else {
             None
         };
 
         let username = if username_flag {
-            let username =
-                decoding::decode_utf8_string(reader).context("Failed to decode username")?;
-            debug!("Username: {}", username);
+            let username = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
             Some(username)
         } else {
             None
         };
 
         let password = if password_flag {
-            let password =
-                decoding::decode_binary_data(reader).context("Failed to decode password")?;
-            debug!("Password decoded");
+            let password = decode_binary_data(buf).map_err(DecodeError::PacketError)?;
             Some(password)
         } else {
             None
@@ -199,7 +189,6 @@ impl ConnectPacket {
             protocol_name,
             protocol_version,
             clean_start,
-            will_flag,
             qos_level,
             will_retain,
             keep_alive,

@@ -2,13 +2,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use anyhow::Context;
-use log::debug;
 
-use crate::protocol::{
-    encoding::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int},
-    packet_type::PacketType,
-    MAX_PACKET_SIZE,
-};
+use crate::codec::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int};
+use crate::constants::{CONNACK_IDENTIFIER, MAX_PACKET_SIZE};
 
 pub const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 pub const RECEIVE_MAXIMUM_IDENTIFIER: u8 = 0x21;
@@ -306,13 +302,11 @@ impl ConnAckPacket {
         })?;
         let encoded_remaining_len = encode_variable_byte_int(remaining_len);
 
-        let control_byte = PacketType::ConnAck.control_byte();
-
         // Allocate enough space for the control packet type, flags and remaining length
         let mut header = Vec::with_capacity(1 + encoded_remaining_len.len());
 
         // Append the control packet, flags and remaining length to fixed header
-        header.push(control_byte);
+        header.push(CONNACK_IDENTIFIER << 4);
         header.extend(encoded_remaining_len);
 
         Ok(header)
@@ -457,7 +451,6 @@ impl ConnAckPacket {
 
         // Remaining Length: Acknowledge Flags + Reason Code + Property length + Properties
         self.remaining_len += 1 + 1 + properties_len.len() + properties.len();
-        debug!("remaining_len: {}", self.remaining_len);
 
         let fixed_header =
             self.encode_fixed_header().context("Failed to encode packet fixed header")?;
