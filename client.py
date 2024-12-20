@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -20,8 +21,10 @@ def on_connect(
     # reconnect then subscriptions will be renewed.
     client.subscribe("some/topic", options=SubscribeOptions(qos=0,retainAsPublished=False, retainHandling=SubscribeOptions.RETAIN_SEND_IF_NEW_SUB))
 
-
     client.publish("some/topic", "data")
+
+    time.sleep(6)
+    client.disconnect()
 
 
 # The callback for when a PUBLISH message is received from the server.

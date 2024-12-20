@@ -27,12 +27,14 @@ pub(crate) enum IncomingPacket {
     Disconnect(DisconnectPacket),
     Subscribe(SubscribePacket),
     Publish,
+    PingReq,
 }
 
 #[derive(Debug)]
 pub(crate) enum OutgoingPacket {
     ConnAck(ConnAckPacket),
     Disconnect(DisconnectPacket),
+    PingResp,
 }
 
 #[derive(Debug)]
@@ -41,15 +43,17 @@ pub(crate) enum PacketError {
     PacketTooLarge,
     MalformedPacket,
     UnexpectedError,
+    ProtocolError,
 }
 
 impl fmt::Display for PacketError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            PacketError::ConnectionReset => "Connection Reset",
-            PacketError::PacketTooLarge => "Packet Too Large",
-            PacketError::MalformedPacket => "Malformed Packet",
-            PacketError::UnexpectedError => "Unexpected Error",
+            Self::ConnectionReset => "Connection Reset",
+            Self::PacketTooLarge => "Packet Too Large",
+            Self::MalformedPacket => "Malformed Packet",
+            Self::UnexpectedError => "Unexpected Error",
+            Self::ProtocolError => "Protocol Error",
         };
         write!(f, "{value}")
     }
@@ -171,18 +175,18 @@ impl Connection {
 
                 Ok(Some(IncomingPacket::Publish))
             }
+            PINGREQ_IDENTIFIER => Ok(Some(IncomingPacket::PingReq)),
             PUBACK_IDENTIFIER
             | PUBREC_IDENTIFIER
             | PUBREL_IDENTIFIER
             | PUBCOMP_IDENTIFIER
             | UNSUBSCRIBE_IDENTIFIER
-            | PINGREQ_IDENTIFIER
             | AUTH_IDENTIFIER => {
                 todo!("Not implemeted: {packet_type}")
             }
             // Server to client
             CONNACK_IDENTIFIER | SUBACK_IDENTIFIER | UNSUBACK_IDENTIFIER | PINGRESP_IDENTIFIER => {
-                Err(PacketError::MalformedPacket)
+                Err(PacketError::ProtocolError)
             }
             _ => Err(PacketError::MalformedPacket),
         }
@@ -208,18 +212,20 @@ impl Connection {
         // packet.extend(variable_header);
         // packet.extend(payload);
         //
-        match packet {
-            OutgoingPacket::ConnAck(mut packet) => {
-                let buf = packet.encode().unwrap();
-                self.stream.write_all(&buf).await?;
-                self.stream.flush().await?;
-            }
-            OutgoingPacket::Disconnect(mut packet) => {
-                let buf = packet.encode().unwrap();
-                self.stream.write_all(&buf).await?;
-                self.stream.flush().await?;
+        let encoded_packet = match packet {
+            OutgoingPacket::ConnAck(mut packet) => packet.encode().unwrap(),
+            OutgoingPacket::Disconnect(mut packet) => packet.encode().unwrap(),
+            OutgoingPacket::PingResp => {
+                let mut buf = Vec::with_capacity(2);
+
+                buf.push(PINGRESP_IDENTIFIER << 4);
+                buf.push(0);
+                buf
             }
         };
+
+        self.stream.write_all(&encoded_packet).await?;
+        self.stream.flush().await?;
 
         Ok(())
     }

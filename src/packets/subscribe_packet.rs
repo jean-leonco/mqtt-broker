@@ -42,7 +42,6 @@ pub(crate) struct SubscribePacket {
 #[derive(Debug)]
 pub(crate) enum DecodeError {
     PacketError(PacketError),
-    ProtocolError,
 }
 
 impl SubscribePacket {
@@ -54,7 +53,7 @@ impl SubscribePacket {
         buf.advance(properties_len);
 
         if !buf.has_remaining() {
-            return Err(DecodeError::ProtocolError);
+            return Err(DecodeError::PacketError(PacketError::ProtocolError));
         }
 
         let mut topics = Vec::new();
@@ -65,7 +64,7 @@ impl SubscribePacket {
 
             let qos_level = subscription_options & 0b0000_0011;
             if qos_level > 2 {
-                return Err(DecodeError::ProtocolError);
+                return Err(DecodeError::PacketError(PacketError::ProtocolError));
             }
 
             let retain_as_published = subscription_options >> 3 & 1 == 1;
@@ -73,7 +72,7 @@ impl SubscribePacket {
             let Some(retain_handling) =
                 RetainHandling::from_u8(subscription_options >> 4 & 0b0000_0011)
             else {
-                return Err(DecodeError::ProtocolError);
+                return Err(DecodeError::PacketError(PacketError::ProtocolError));
             };
 
             let reserved_bits = subscription_options >> 6 & 0b0000_0011;

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use log::debug;
-use tokio::{sync::mpsc, time::Instant};
+use log::{debug, error};
+use tokio::{io, sync::mpsc, time::Instant};
 
 use crate::{
     broker_state::{BrokerEvent, BrokerState},
@@ -22,7 +22,7 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub async fn handle_session(
+    pub async fn handle_connection(
         mut connection: Connection,
         mut broker_state: BrokerState,
     ) -> anyhow::Result<()> {
@@ -37,7 +37,7 @@ impl Session {
                     .session_present(session_present)
                     .reason_code(ConnectReasonCode::Success)
                     .build();
-                connection.write_packet(OutgoingPacket::ConnAck(response)).await.unwrap();
+                connection.write_packet(OutgoingPacket::ConnAck(response)).await?;
 
                 let keep_alive = Duration::from_secs(u64::from(packet.keep_alive));
 
@@ -63,14 +63,16 @@ impl Session {
             }
         };
 
-        session.run().await;
+        if let Err(e) = session.run().await {
+            error!("Error handling session: {:?}", e);
+        }
 
         session.discard_session();
 
         Ok(())
     }
 
-    async fn run(&mut self) {
+    async fn run(&mut self) -> io::Result<()> {
         let mut last_activity = Instant::now();
 
         loop {
@@ -89,9 +91,9 @@ impl Session {
 
                                     self.connection
                                         .write_packet(OutgoingPacket::Disconnect(packet))
-                                        .await
-                                        .unwrap();
-                                    break;
+                                        .await?;
+
+                                    return Ok(());
                                 }
                                 IncomingPacket::Subscribe(subscribe_packet) => {
                                     for topic in subscribe_packet.topics {
@@ -101,8 +103,11 @@ impl Session {
                                 IncomingPacket::Publish => {
                                     self.broker_state.publish("some/topic");
                                 }
+                                IncomingPacket::PingReq => {
+                                    self.connection.write_packet(OutgoingPacket::PingResp).await?;
+                                }
                                 IncomingPacket::Disconnect(_) => {
-                                    break;
+                                    return Ok(());
                                 }
                             }
                         }
@@ -111,7 +116,7 @@ impl Session {
                                 && Instant::now().duration_since(last_activity)
                                     > self.keep_alive.mul_f64(1.5)
                             {
-                                break;
+                                return Ok(());
                             }
                         }
                     }

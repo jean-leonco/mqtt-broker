@@ -27,7 +27,8 @@ async fn main() -> io::Result<()> {
 
         let broker_state = broker_state.clone();
         tokio::spawn(async move {
-            if let Err(e) = Session::handle_session(Connection::new(stream), broker_state).await {
+            if let Err(e) = Session::handle_connection(Connection::new(stream), broker_state).await
+            {
                 error!("Error handling connection from {}: {:?}", addr, e);
             }
         });
