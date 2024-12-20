@@ -51,22 +51,21 @@ impl BrokerState {
 
         let session = self.sessions.remove(client_id);
         if session.is_none() {
-            error!("Session with client id {client_id} does not exist")
+            error!("Session with client id {client_id} does not exist");
         }
     }
 
-    pub(crate) fn subscribe(&mut self, topic_filter: String, client_id: String) {
-        match self.sessions.get_mut(&client_id) {
-            Some(mut session) => {
-                session.subscriptions.insert(topic_filter);
-            }
-            None => error!("Session with client id {client_id} does not exist"),
+    pub(crate) fn subscribe(&mut self, topic_filter: String, client_id: &str) {
+        if let Some(mut session) = self.sessions.get_mut(client_id) {
+            session.subscriptions.insert(topic_filter);
+        } else {
+            error!("Session with client id {client_id} does not exist");
         }
     }
 
-    pub(crate) fn publish(&self, topic_name: String) {
+    pub(crate) fn publish(&self, topic_name: &str) {
         for entry in self.sessions.iter() {
-            if entry.subscriptions.contains(&topic_name) {
+            if entry.subscriptions.contains(topic_name) {
                 let tx = entry.tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = tx.send(BrokerEvent::Publish).await {

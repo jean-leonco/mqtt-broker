@@ -136,20 +136,6 @@ impl fmt::Display for ConnectReasonCode {
     }
 }
 
-/// Maximum supported `QoS`.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum MaximumQos {
-    Zero = 0,
-    One = 1,
-}
-
-impl MaximumQos {
-    /// Converts the `MaximumQos` to its numeric value.
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-}
-
 /// The CONNACK packet is the packet sent by the Server in response to a CONNECT packet received from a Client.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -169,7 +155,7 @@ pub(crate) struct ConnAckPacket {
     receive_maximum: Option<u16>,
 
     /// If a Server does not support `QoS` 1 or `QoS` 2 PUBLISH packets it MUST send a Maximum `QoS` in the CONNACK packet specifying the highest `QoS` it supports.
-    maximum_qos: Option<MaximumQos>,
+    maximum_qos: Option<u8>,
 
     /// If present, this byte declares whether the Server supports retained messages. A value of 0 means that retained messages are not supported. A value of 1 means retained messages are supported. If not present, then retained messages are supported.
     retain_available: Option<bool>,
@@ -330,7 +316,7 @@ impl ConnAckPacket {
         // Add Maximum QoS if present
         if let Some(maximum_qos) = self.maximum_qos {
             properties.push(MAXIMUM_QOS_IDENTIFIER);
-            properties.push(maximum_qos.to_u8());
+            properties.push(maximum_qos);
         }
 
         // Add Retain available if present

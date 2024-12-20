@@ -419,30 +419,28 @@ impl DisconnectPacket {
             });
         }
 
-        let reason_code = match DisconnectReasonCode::from_u8(buf.get_u8()) {
-            Some(value) => value,
-            None => return Err(DecodeError::PacketError(PacketError::MalformedPacket)),
+        let Some(reason_code) = DisconnectReasonCode::from_u8(buf.get_u8()) else {
+            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
         };
 
         let properties_len = decode_variable_byte_int(buf).map_err(DecodeError::PacketError)?;
 
         let (session_expiry_interval, reason_string, user_properties, server_reference) =
-            match properties_len {
-                0 => (None, None, None, None),
-                _ => {
-                    // TODO: Decode properties
-                    buf.advance(properties_len);
-                    (None, None, None, None)
-                }
+            if properties_len == 0 {
+                (None, None, None, None)
+            } else {
+                // TODO: Decode properties
+                buf.advance(properties_len);
+                (None, None, None, None)
             };
 
-        return Ok(Self {
+        Ok(Self {
             reason_code,
             session_expiry_interval,
             reason_string,
             user_properties,
             server_reference,
             remaining_len: 0,
-        });
+        })
     }
 }

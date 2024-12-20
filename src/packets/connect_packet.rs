@@ -144,13 +144,12 @@ impl ConnectPacket {
             user_properties,
             authentication_method,
             authentication_data,
-        ) = match properties_len {
-            0 => (None, None, None, None, None, None, None, None, None),
-            _ => {
-                // TODO: Decode properties
-                buf.advance(properties_len);
-                (None, None, None, None, None, None, None, None, None)
-            }
+        ) = if properties_len == 0 {
+            (None, None, None, None, None, None, None, None, None)
+        } else {
+            // TODO: Decode properties
+            buf.advance(properties_len);
+            (None, None, None, None, None, None, None, None, None)
         };
 
         let client_id = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;

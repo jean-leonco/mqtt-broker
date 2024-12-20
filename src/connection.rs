@@ -82,9 +82,9 @@ impl Connection {
                     if n == 0 {
                         if self.buffer.is_empty() {
                             return Ok(None);
-                        } else {
-                            return Err(PacketError::ConnectionReset);
                         }
+
+                        return Err(PacketError::ConnectionReset);
                     }
                 }
                 Err(e) => {
@@ -182,9 +182,9 @@ impl Connection {
             }
             // Server to client
             CONNACK_IDENTIFIER | SUBACK_IDENTIFIER | UNSUBACK_IDENTIFIER | PINGRESP_IDENTIFIER => {
-                return Err(PacketError::MalformedPacket)
+                Err(PacketError::MalformedPacket)
             }
-            _ => return Err(PacketError::MalformedPacket),
+            _ => Err(PacketError::MalformedPacket),
         }
     }
 
@@ -210,16 +210,15 @@ impl Connection {
         //
         match packet {
             OutgoingPacket::ConnAck(mut packet) => {
-                let mut buf = packet.encode().unwrap();
-                self.stream.write_all(&mut buf).await?;
+                let buf = packet.encode().unwrap();
+                self.stream.write_all(&buf).await?;
                 self.stream.flush().await?;
             }
             OutgoingPacket::Disconnect(mut packet) => {
-                let mut buf = packet.encode().unwrap();
-                self.stream.write_all(&mut buf).await?;
+                let buf = packet.encode().unwrap();
+                self.stream.write_all(&buf).await?;
                 self.stream.flush().await?;
             }
-            _ => todo!(),
         };
 
         Ok(())

@@ -45,7 +45,7 @@ pub(crate) fn decode_utf8_string(buf: &mut Cursor<&[u8]>) -> Result<String, Pack
 
     // Read the string data
     let mut encoded_value = vec![0; len];
-    if let Err(_) = std::io::Read::read_exact(buf, &mut encoded_value) {
+    if std::io::Read::read_exact(buf, &mut encoded_value).is_err() {
         return Err(PacketError::UnexpectedError);
     }
 
@@ -66,7 +66,7 @@ pub(crate) fn decode_binary_data(buf: &mut Cursor<&[u8]>) -> Result<BytesMut, Pa
     // Read the binary data
     let mut decoded_value = BytesMut::with_capacity(len);
     match std::io::Read::read_exact(buf, &mut decoded_value) {
-        Ok(_) => Ok(decoded_value),
+        Ok(()) => Ok(decoded_value),
         Err(_) => Err(PacketError::UnexpectedError),
     }
 }

@@ -39,14 +39,12 @@ impl Session {
                     .build();
                 connection.write_packet(OutgoingPacket::ConnAck(response)).await.unwrap();
 
-                let keep_alive = Duration::from_secs(packet.keep_alive as u64);
+                let keep_alive = Duration::from_secs(u64::from(packet.keep_alive));
 
                 let session_expiry_interval =
-                    if let Some(session_expiry_interval) = packet.session_expiry_interval {
-                        Some(Duration::from_secs(session_expiry_interval as u64))
-                    } else {
-                        None
-                    };
+                    packet.session_expiry_interval.map(|session_expiry_interval| {
+                        Duration::from_secs(u64::from(session_expiry_interval))
+                    });
 
                 Self {
                     connection,
@@ -97,11 +95,11 @@ impl Session {
                                 }
                                 IncomingPacket::Subscribe(subscribe_packet) => {
                                     for topic in subscribe_packet.topics {
-                                        self.broker_state.subscribe(topic.name, self.client_id.clone());
+                                        self.broker_state.subscribe(topic.name, &self.client_id);
                                     }
                                 },
                                 IncomingPacket::Publish => {
-                                    self.broker_state.publish("some/topic".to_string());
+                                    self.broker_state.publish("some/topic");
                                 }
                                 IncomingPacket::Disconnect(_) => {
                                     break;

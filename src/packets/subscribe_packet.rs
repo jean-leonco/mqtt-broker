@@ -70,11 +70,11 @@ impl SubscribePacket {
 
             let retain_as_published = subscription_options >> 3 & 1 == 1;
 
-            let retain_handling =
-                match RetainHandling::from_u8(subscription_options >> 4 & 0b0000_0011) {
-                    Some(value) => value,
-                    _ => return Err(DecodeError::ProtocolError),
-                };
+            let Some(retain_handling) =
+                RetainHandling::from_u8(subscription_options >> 4 & 0b0000_0011)
+            else {
+                return Err(DecodeError::ProtocolError);
+            };
 
             let reserved_bits = subscription_options >> 6 & 0b0000_0011;
             if reserved_bits != 0x0 {
