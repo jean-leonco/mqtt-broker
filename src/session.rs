@@ -1,6 +1,6 @@
 use std::{fmt, time::Duration};
 
-use log::{debug, error};
+use log::{debug, error, info};
 use tokio::{io, sync::mpsc, time::Instant};
 
 use crate::{
@@ -130,7 +130,8 @@ impl Session {
                                         .await
                                         .map_err(SessionError::IoError)?;
                                 }
-                                IncomingPacket::Disconnect(_) => {
+                                IncomingPacket::Disconnect(packet) => {
+                                    info!("Client {} disconneted with reason code: {}", self.client_id, packet.reason_code);
                                     return Ok(());
                                 }
                             }

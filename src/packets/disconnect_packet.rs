@@ -1,4 +1,3 @@
-use anyhow::Context;
 use bytes::Buf;
 use log::debug;
 use std::{collections::HashMap, fmt, io::Cursor};
@@ -16,6 +15,19 @@ const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
 const USER_PROPERTY_IDENTIFIER: u8 = 0x26;
 const SERVER_REFERENCE_IDENTIFIER: u8 = 0x1C;
+
+#[derive(Debug)]
+pub(crate) enum EncodeError {
+    PacketError(PacketError),
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+        }
+    }
+}
 
 pub struct DisconnectPacketBuilder<State>(State);
 
@@ -257,6 +269,14 @@ pub(crate) enum DecodeError {
     PacketError(PacketError),
 }
 
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+        }
+    }
+}
+
 /// The DISCONNECT packet is the final MQTT Control Packet sent from the Client or the Server.
 /// It indicates the reason why the Network Connection is being closed.
 /// The Client or Server MAY send a DISCONNECT packet before closing the Network Connection.
@@ -265,7 +285,7 @@ pub(crate) enum DecodeError {
 #[derive(Debug)]
 pub(crate) struct DisconnectPacket {
     /// The Reason Code indicating why the DISCONNECT is occurring.
-    reason_code: DisconnectReasonCode,
+    pub reason_code: DisconnectReasonCode,
 
     /// Represents the Session Expiry Interval in seconds.
     /// The Session Expiry Interval MUST NOT be sent on a DISCONNECT by the Server.
@@ -300,10 +320,9 @@ impl DisconnectPacket {
     /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
     /// | Byte 1    | Packet type           | Packet flags          |
     /// | Byte 2    | Remaining Length                              |
-    fn encode_fixed_header(&self) -> anyhow::Result<Vec<u8>> {
-        let remaining_len = u32::try_from(self.remaining_len).with_context(|| {
-            format!("Failed to cast remaining length {} to u32", self.remaining_len)
-        })?;
+    fn encode_fixed_header(&self) -> Result<Vec<u8>, EncodeError> {
+        let remaining_len = u32::try_from(self.remaining_len)
+            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
         let encoded_remaining_len = encode_variable_byte_int(remaining_len);
 
         // Allocate enough space for the control packet type, flags and remaining length
@@ -321,7 +340,7 @@ impl DisconnectPacket {
     ///
     /// # Errors
     /// Returns an error if packet size exceeds `MAX_PACKET_SIZE`.
-    pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
+    pub fn encode(&mut self) -> Result<Vec<u8>, EncodeError> {
         // Check if we have any properties at all
         let has_properties = self.session_expiry_interval.is_some()
             || self.reason_string.is_some()
@@ -332,7 +351,7 @@ impl DisconnectPacket {
         if matches!(self.reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties
         {
             debug!("NormalDisconnection with no properties: sending minimal packet");
-            return self.encode_fixed_header().context("Failed to encode packet fixed header");
+            return self.encode_fixed_header();
         }
 
         let mut properties = Vec::new();
@@ -347,8 +366,8 @@ impl DisconnectPacket {
         if let Some(server_reference) = &self.server_reference {
             // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
-            let server_reference = encode_utf8_string(server_reference)
-                .context("Failed to encode server_reference")?;
+            let server_reference =
+                encode_utf8_string(server_reference).map_err(EncodeError::PacketError)?;
 
             properties.push(SERVER_REFERENCE_IDENTIFIER);
             properties.extend(server_reference);
@@ -359,7 +378,7 @@ impl DisconnectPacket {
             // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
 
             let reason_string =
-                encode_utf8_string(reason_string).context("Failed to encode reason_string")?;
+                encode_utf8_string(reason_string).map_err(EncodeError::PacketError)?;
 
             properties.push(REASON_STRING_IDENTIFIER);
             properties.extend(reason_string);
@@ -372,22 +391,19 @@ impl DisconnectPacket {
             for user_property in user_properties {
                 properties.push(USER_PROPERTY_IDENTIFIER);
                 properties.extend(
-                    encode_utf8_string_pair(user_property)
-                        .context("Failed to encode user_property")?,
+                    encode_utf8_string_pair(user_property).map_err(EncodeError::PacketError)?,
                 );
             }
         }
 
-        let properties_len = u32::try_from(properties.len()).with_context(|| {
-            format!("Failed to cast properties_len {} to u32", properties.len())
-        })?;
+        let properties_len = u32::try_from(properties.len())
+            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
         let properties_len = encode_variable_byte_int(properties_len);
 
         // Remaining Length: Reason code + Property length + Properties
         self.remaining_len += 1 + properties_len.len() + properties.len();
 
-        let fixed_header =
-            self.encode_fixed_header().context("Failed to encode packet fixed header")?;
+        let fixed_header = self.encode_fixed_header()?;
 
         // Build packet: Fixed header + Reason code + Property length + Properties
         let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);
@@ -398,10 +414,7 @@ impl DisconnectPacket {
 
         // Ensure the packet isn't larger than the MAX_PACKET_SIZE
         if packet.len() > MAX_PACKET_SIZE {
-            anyhow::bail!(
-            "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
-            packet.len(), MAX_PACKET_SIZE
-        );
+            return Err(EncodeError::PacketError(PacketError::PacketTooLarge));
         }
 
         Ok(packet)

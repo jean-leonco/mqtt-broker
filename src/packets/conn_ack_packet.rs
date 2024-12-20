@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use anyhow::Context;
-
 use crate::codec::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int};
+use crate::connection::PacketError;
 use crate::constants::{CONNACK_IDENTIFIER, MAX_PACKET_SIZE};
 
 pub const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
@@ -204,6 +203,19 @@ pub(crate) struct ConnAckPacket {
     remaining_len: usize,
 }
 
+#[derive(Debug)]
+pub(crate) enum EncodeError {
+    PacketError(PacketError),
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+        }
+    }
+}
+
 pub struct ConnAckPacketBuilder<State>(State);
 
 pub struct NeedsSessionPresent(());
@@ -235,9 +247,9 @@ impl ConnAckPacketBuilder<NeedsReasonCode> {
 }
 
 impl ConnAckPacketBuilder<ReadyToBuild> {
-    pub fn reason_string(self, reason_string: String) -> ConnAckPacketBuilder<ReadyToBuild> {
-        ConnAckPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
-    }
+    //pub fn reason_string(self, reason_string: String) -> ConnAckPacketBuilder<ReadyToBuild> {
+    //    ConnAckPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
+    //}
 
     pub fn build(self) -> ConnAckPacket {
         ConnAckPacket {
@@ -282,10 +294,9 @@ impl ConnAckPacket {
     /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
     /// | Byte 1    | Packet type           | Packet flags          |
     /// | Byte 2    | Remaining Length                              |
-    fn encode_fixed_header(&self) -> anyhow::Result<Vec<u8>> {
-        let remaining_len = u32::try_from(self.remaining_len).with_context(|| {
-            format!("Failed to cast remaining length {} to u32", self.remaining_len)
-        })?;
+    fn encode_fixed_header(&self) -> Result<Vec<u8>, EncodeError> {
+        let remaining_len = u32::try_from(self.remaining_len)
+            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
         let encoded_remaining_len = encode_variable_byte_int(remaining_len);
 
         // Allocate enough space for the control packet type, flags and remaining length
@@ -298,7 +309,7 @@ impl ConnAckPacket {
         Ok(header)
     }
 
-    pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
+    pub fn encode(&mut self) -> Result<Vec<u8>, EncodeError> {
         let mut properties = Vec::new();
 
         // Add Session Expiry Interval if present
@@ -337,8 +348,7 @@ impl ConnAckPacket {
         if let Some(assigned_client_identifier) = &self.assigned_client_identifier {
             properties.push(ASSIGNED_CLIENT_IDENTIFIER);
             properties.extend(
-                encode_utf8_string(assigned_client_identifier)
-                    .context("Failed to encode assigned_client_identifier")?,
+                encode_utf8_string(assigned_client_identifier).map_err(EncodeError::PacketError)?,
             );
         }
 
@@ -351,9 +361,7 @@ impl ConnAckPacket {
         // Add Reason String if present
         if let Some(reason_string) = &self.reason_string {
             properties.push(REASON_STRING_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(reason_string).context("Failed to encode reason_string")?,
-            );
+            properties.extend(encode_utf8_string(reason_string).map_err(EncodeError::PacketError)?);
         }
 
         // Add User Properties if present
@@ -361,8 +369,7 @@ impl ConnAckPacket {
             for user_property in user_properties {
                 properties.push(USER_PROPERTY_IDENTIFIER);
                 properties.extend(
-                    encode_utf8_string_pair(user_property)
-                        .context("Failed to encode user_property")?,
+                    encode_utf8_string_pair(user_property).map_err(EncodeError::PacketError)?,
                 );
             }
         }
@@ -401,26 +408,22 @@ impl ConnAckPacket {
         if let Some(response_information) = &self.response_information {
             properties.push(RESPONSE_INFORMATION_IDENTIFIER);
             properties.extend(
-                encode_utf8_string(response_information)
-                    .context("Failed to encode response_information")?,
+                encode_utf8_string(response_information).map_err(EncodeError::PacketError)?,
             );
         }
 
         // Add Server Reference if present
         if let Some(server_reference) = &self.server_reference {
             properties.push(SERVER_REFERENCE_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(server_reference)
-                    .context("Failed to encode server_reference")?,
-            );
+            properties
+                .extend(encode_utf8_string(server_reference).map_err(EncodeError::PacketError)?);
         }
 
         // Add Authentication Method if present
         if let Some(authentication_method) = &self.authentication_method {
             properties.push(AUTHENTICATION_METHOD_IDENTIFIER);
             properties.extend(
-                encode_utf8_string(authentication_method)
-                    .context("Failed to encode authentication_method")?,
+                encode_utf8_string(authentication_method).map_err(EncodeError::PacketError)?,
             );
         }
 
@@ -430,16 +433,14 @@ impl ConnAckPacket {
             properties.extend(authentication_data);
         }
 
-        let properties_len = u32::try_from(properties.len()).with_context(|| {
-            format!("Failed to cast properties_len {} to u32", properties.len())
-        })?;
+        let properties_len = u32::try_from(properties.len())
+            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
         let properties_len = encode_variable_byte_int(properties_len);
 
         // Remaining Length: Acknowledge Flags + Reason Code + Property length + Properties
         self.remaining_len += 1 + 1 + properties_len.len() + properties.len();
 
-        let fixed_header =
-            self.encode_fixed_header().context("Failed to encode packet fixed header")?;
+        let fixed_header = self.encode_fixed_header()?;
 
         // Byte 1 is the "Connect Acknowledge Flags". Bits 7-1 are reserved and MUST be set to 0
         // Bit 0 is the Session Present Flag.
@@ -455,10 +456,7 @@ impl ConnAckPacket {
 
         // Ensure the packet isn't larger than the MAX_PACKET_SIZE
         if packet.len() > MAX_PACKET_SIZE {
-            anyhow::bail!(
-            "Packet size exceeds the maximum allowed value. Packet size: {}, Maximum allowed: {}",
-            packet.len(), MAX_PACKET_SIZE
-        );
+            return Err(EncodeError::PacketError(PacketError::PacketTooLarge));
         }
 
         Ok(packet)

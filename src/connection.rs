@@ -119,7 +119,7 @@ impl Connection {
                 let start = buf.position() as usize;
 
                 let packet = ConnectPacket::decode(&mut buf)
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         error!("{:?}", e);
                     })
                     .unwrap();
@@ -137,7 +137,7 @@ impl Connection {
                 let start = buf.position() as usize;
 
                 let packet = DisconnectPacket::decode(&mut buf)
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         error!("{:?}", e);
                     })
                     .unwrap();
@@ -155,7 +155,7 @@ impl Connection {
                 let start = buf.position() as usize;
 
                 let packet = SubscribePacket::decode(&mut buf)
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         error!("{:?}", e);
                     })
                     .unwrap();

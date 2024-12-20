@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{fmt, io::Cursor};
 
 use bytes::Buf;
 use log::debug;
@@ -27,6 +27,7 @@ impl RetainHandling {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct TopicFilter {
     pub name: String,
     qos_level: u8,
@@ -42,6 +43,14 @@ pub(crate) struct SubscribePacket {
 #[derive(Debug)]
 pub(crate) enum DecodeError {
     PacketError(PacketError),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+        }
+    }
 }
 
 impl SubscribePacket {

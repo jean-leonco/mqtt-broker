@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor};
+use std::{collections::HashMap, fmt, io::Cursor};
 
 use bytes::{Buf, BytesMut};
 
@@ -10,6 +10,7 @@ use crate::{
 
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct ConnectPacket {
     /// The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”.
     pub protocol_name: String,
@@ -86,6 +87,16 @@ pub(crate) enum DecodeError {
     PacketError(PacketError),
     UnsupportedProtocolVersion,
     ClientIdentifierNotValid,
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+            Self::UnsupportedProtocolVersion => write!(f, "Unsupported Protocol Version"),
+            Self::ClientIdentifierNotValid => write!(f, "Client Identifier Not Valid"),
+        }
+    }
 }
 
 impl ConnectPacket {
