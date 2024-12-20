@@ -1,9 +1,8 @@
-use anyhow::Context;
 use broker_state::BrokerState;
 use connection::Connection;
 use log::{error, info};
 use session::Session;
-use tokio::net::TcpListener;
+use tokio::{io, net::TcpListener};
 
 pub(crate) mod broker_state;
 pub(crate) mod codec;
@@ -13,7 +12,7 @@ pub(crate) mod packets;
 pub(crate) mod session;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> io::Result<()> {
     env_logger::init();
 
     let broker_state = BrokerState::new();
@@ -23,8 +22,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Broker is listening on 127.0.0.1:1883");
 
     loop {
-        let (stream, addr) =
-            listener.accept().await.context("Failed to accept incoming connection")?;
+        let (stream, addr) = listener.accept().await?;
         info!("Client connected: {}", addr);
 
         let broker_state = broker_state.clone();

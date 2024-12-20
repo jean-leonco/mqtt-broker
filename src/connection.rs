@@ -3,7 +3,7 @@ use std::{error::Error, fmt, io::Cursor};
 use bytes::{Buf, BytesMut};
 use log::error;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
@@ -17,7 +17,7 @@ use crate::{
     },
     packets::{
         conn_ack_packet::ConnAckPacket, connect_packet::ConnectPacket,
-        disconnect_packet::DisconnectPacket,
+        disconnect_packet::DisconnectPacket, subscribe_packet::SubscribePacket,
     },
 };
 
@@ -25,6 +25,8 @@ use crate::{
 pub(crate) enum IncomingPacket {
     Connect(ConnectPacket),
     Disconnect(DisconnectPacket),
+    Subscribe(SubscribePacket),
+    Publish,
 }
 
 #[derive(Debug)]
@@ -140,12 +142,39 @@ impl Connection {
 
                 Ok(Some(IncomingPacket::Disconnect(packet)))
             }
-            PUBLISH_IDENTIFIER
-            | PUBACK_IDENTIFIER
+            SUBSCRIBE_IDENTIFIER => {
+                let remaining_len = decode_variable_byte_int(&mut buf)?;
+                if remaining_len > buf.remaining() {
+                    return Ok(None);
+                }
+
+                let start = buf.position() as usize;
+
+                let packet = SubscribePacket::decode(&mut buf)
+                    .map_err(|e| {
+                        error!("{:?}", e);
+                    })
+                    .unwrap();
+
+                self.buffer.advance(start + remaining_len);
+
+                Ok(Some(IncomingPacket::Subscribe(packet)))
+            }
+            PUBLISH_IDENTIFIER => {
+                let remaining_len = decode_variable_byte_int(&mut buf)?;
+                if remaining_len > buf.remaining() {
+                    return Ok(None);
+                }
+
+                let start = buf.position() as usize;
+                self.buffer.advance(start + remaining_len);
+
+                Ok(Some(IncomingPacket::Publish))
+            }
+            PUBACK_IDENTIFIER
             | PUBREC_IDENTIFIER
             | PUBREL_IDENTIFIER
             | PUBCOMP_IDENTIFIER
-            | SUBSCRIBE_IDENTIFIER
             | UNSUBSCRIBE_IDENTIFIER
             | PINGREQ_IDENTIFIER
             | AUTH_IDENTIFIER => {
@@ -160,7 +189,7 @@ impl Connection {
     }
 
     /// Write a packet to the connection.
-    pub async fn write_packet(&mut self, packet: OutgoingPacket) -> tokio::io::Result<()> {
+    pub async fn write_packet(&mut self, packet: OutgoingPacket) -> io::Result<()> {
         // needs a trait that defines methods: encode_payload, encode_variable_header, encode_flags
         //
         // let payload = packet.encode_payload();
@@ -182,13 +211,13 @@ impl Connection {
         match packet {
             OutgoingPacket::ConnAck(mut packet) => {
                 let mut buf = packet.encode().unwrap();
-                self.stream.write_all(&mut buf).await.unwrap();
-                self.stream.flush().await.unwrap();
+                self.stream.write_all(&mut buf).await?;
+                self.stream.flush().await?;
             }
             OutgoingPacket::Disconnect(mut packet) => {
                 let mut buf = packet.encode().unwrap();
-                self.stream.write_all(&mut buf).await.unwrap();
-                self.stream.flush().await.unwrap();
+                self.stream.write_all(&mut buf).await?;
+                self.stream.flush().await?;
             }
             _ => todo!(),
         };

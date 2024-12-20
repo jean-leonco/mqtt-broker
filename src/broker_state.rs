@@ -1,44 +1,79 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashSet, sync::Arc};
 
-use log::debug;
-use tokio::time::Instant;
+use dashmap::DashMap;
+use log::{debug, error};
+use tokio::{sync::mpsc, time::Instant};
 
 #[derive(Debug)]
-struct SessionState {}
+pub(crate) enum BrokerEvent {
+    Publish,
+}
+
+#[derive(Debug)]
+struct SessionState {
+    tx: mpsc::Sender<BrokerEvent>,
+    subscriptions: HashSet<String>,
+}
 
 impl SessionState {
-    fn new() -> Self {
-        Self {}
+    fn new(tx: mpsc::Sender<BrokerEvent>) -> Self {
+        Self { tx, subscriptions: HashSet::new() }
     }
 }
 
 #[derive(Debug, Clone)]
 
 pub(crate) struct BrokerState {
-    sessions: Arc<Mutex<HashMap<String, SessionState>>>,
+    sessions: Arc<DashMap<String, SessionState>>,
 }
 
 impl BrokerState {
     pub fn new() -> Self {
-        Self { sessions: Arc::new(Mutex::new(HashMap::new())) }
+        Self { sessions: Arc::new(DashMap::new()) }
     }
 
-    pub fn save_session(&mut self, client_id: String, clean_start: bool) -> bool {
-        let mut sessions = self.sessions.lock().unwrap();
-        let value = sessions.insert(client_id, SessionState::new());
-        if clean_start {
-            return false;
-        }
+    pub fn save_session(
+        &mut self,
+        client_id: String,
+        clean_start: bool,
+    ) -> (bool, mpsc::Receiver<BrokerEvent>) {
+        let (tx, rx) = mpsc::channel(32);
 
-        return value.is_some();
+        match self.sessions.insert(client_id, SessionState::new(tx)) {
+            // If a previous session existed, return true unless clean_start is true
+            Some(_) => (!clean_start, rx),
+            None => (false, rx),
+        }
     }
 
     pub fn schedule_discard_session(&mut self, client_id: &str, expires_at: Instant) {
         debug!("Session will expires at: {expires_at:?}");
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.remove(client_id);
+
+        let session = self.sessions.remove(client_id);
+        if session.is_none() {
+            error!("Session with client id {client_id} does not exist")
+        }
+    }
+
+    pub(crate) fn subscribe(&mut self, topic_filter: String, client_id: String) {
+        match self.sessions.get_mut(&client_id) {
+            Some(mut session) => {
+                session.subscriptions.insert(topic_filter);
+            }
+            None => error!("Session with client id {client_id} does not exist"),
+        }
+    }
+
+    pub(crate) fn publish(&self, topic_name: String) {
+        for entry in self.sessions.iter() {
+            if entry.subscriptions.contains(&topic_name) {
+                let tx = entry.tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tx.send(BrokerEvent::Publish).await {
+                        error!("Failed to send publish event: {:?}", e);
+                    }
+                });
+            }
+        }
     }
 }

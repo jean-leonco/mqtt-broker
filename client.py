@@ -4,6 +4,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion, MQTTProtocolVersion
 from paho.mqtt.properties import Properties
 from paho.mqtt.reasoncodes import ReasonCode
+from paho.mqtt.subscribeoptions import SubscribeOptions
 
 
 # The callback for when the client receives a CONNACK response from the server.
@@ -15,10 +16,12 @@ def on_connect(
     properties: Properties | None,
 ):
     print(f"Connected with result code {reason_code}")
-    client.disconnect()
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
-    # client.subscribe("$SYS/#")
+    client.subscribe("some/topic", options=SubscribeOptions(qos=0,retainAsPublished=False, retainHandling=SubscribeOptions.RETAIN_SEND_IF_NEW_SUB))
+
+
+    client.publish("some/topic", "data")
 
 
 # The callback for when a PUBLISH message is received from the server.
