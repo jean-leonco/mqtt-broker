@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use log::{debug, error};
 use tokio::{io, sync::mpsc, time::Instant};
 
 use crate::{
     broker_state::{BrokerEvent, BrokerState},
-    connection::{Connection, IncomingPacket, OutgoingPacket},
+    connection::{Connection, IncomingPacket, OutgoingPacket, PacketError},
     packets::{
         conn_ack_packet::{ConnAckPacket, ConnectReasonCode},
         disconnect_packet::{DisconnectPacket, DisconnectReasonCode},
@@ -18,15 +18,30 @@ pub(crate) struct Session {
     broker_state: BrokerState,
     client_id: String,
     keep_alive: Duration,
-    session_expiry_interval: Option<Duration>,
+    expiry_interval: Option<Duration>,
+}
+
+#[derive(Debug)]
+pub(crate) enum SessionError {
+    PacketError(PacketError),
+    IoError(io::Error),
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
+            Self::IoError(error) => write!(f, "IO Error: {error}"),
+        }
+    }
 }
 
 impl Session {
     pub async fn handle_connection(
         mut connection: Connection,
         mut broker_state: BrokerState,
-    ) -> anyhow::Result<()> {
-        let first_packet = connection.read_packet().await.unwrap();
+    ) -> Result<(), SessionError> {
+        let first_packet = connection.read_packet().await.map_err(SessionError::PacketError)?;
 
         let mut session = match first_packet {
             Some(IncomingPacket::Connect(packet)) => {
@@ -37,14 +52,16 @@ impl Session {
                     .session_present(session_present)
                     .reason_code(ConnectReasonCode::Success)
                     .build();
-                connection.write_packet(OutgoingPacket::ConnAck(response)).await?;
+                connection
+                    .write_packet(OutgoingPacket::ConnAck(response))
+                    .await
+                    .map_err(SessionError::IoError)?;
 
                 let keep_alive = Duration::from_secs(u64::from(packet.keep_alive));
 
-                let session_expiry_interval =
-                    packet.session_expiry_interval.map(|session_expiry_interval| {
-                        Duration::from_secs(u64::from(session_expiry_interval))
-                    });
+                let expiry_interval = packet
+                    .session_expiry_interval
+                    .map(|expiry_interval| Duration::from_secs(u64::from(expiry_interval)));
 
                 Self {
                     connection,
@@ -52,33 +69,36 @@ impl Session {
                     broker_state,
                     client_id: packet.client_id,
                     keep_alive,
-                    session_expiry_interval,
+                    expiry_interval,
                 }
             }
             Some(_) => {
-                anyhow::bail!("First packet was not CONNECT");
+                error!("First packet was not CONNECT");
+                return Err(SessionError::PacketError(PacketError::ProtocolError));
             }
             None => {
-                anyhow::bail!("No packet received");
+                error!("No packet received");
+                return Err(SessionError::PacketError(PacketError::ProtocolError));
             }
         };
 
         if let Err(e) = session.run().await {
-            error!("Error handling session: {:?}", e);
-        }
+            // Discard session regardless of an error
+            session.discard_session();
 
-        session.discard_session();
+            return Err(e);
+        }
 
         Ok(())
     }
 
-    async fn run(&mut self) -> io::Result<()> {
+    async fn run(&mut self) -> Result<(), SessionError> {
         let mut last_activity = Instant::now();
 
         loop {
             tokio::select! {
                 packet = self.connection.read_packet() => {
-                    match packet.unwrap() {
+                    match packet.map_err(SessionError::PacketError)? {
                         Some(packet) => {
                             last_activity = Instant::now();
 
@@ -91,7 +111,8 @@ impl Session {
 
                                     self.connection
                                         .write_packet(OutgoingPacket::Disconnect(packet))
-                                        .await?;
+                                        .await
+                                        .map_err(SessionError::IoError)?;
 
                                     return Ok(());
                                 }
@@ -104,7 +125,10 @@ impl Session {
                                     self.broker_state.publish("some/topic");
                                 }
                                 IncomingPacket::PingReq => {
-                                    self.connection.write_packet(OutgoingPacket::PingResp).await?;
+                                    self.connection
+                                        .write_packet(OutgoingPacket::PingResp)
+                                        .await
+                                        .map_err(SessionError::IoError)?;
                                 }
                                 IncomingPacket::Disconnect(_) => {
                                     return Ok(());
@@ -129,11 +153,9 @@ impl Session {
     }
 
     fn discard_session(&mut self) {
-        if let Some(session_expiry_interval) = self.session_expiry_interval {
-            self.broker_state.schedule_discard_session(
-                &self.client_id,
-                Instant::now() + session_expiry_interval,
-            );
+        if let Some(expiry_interval) = self.expiry_interval {
+            self.broker_state
+                .schedule_discard_session(&self.client_id, Instant::now() + expiry_interval);
         }
     }
 }

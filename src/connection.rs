@@ -215,13 +215,7 @@ impl Connection {
         let encoded_packet = match packet {
             OutgoingPacket::ConnAck(mut packet) => packet.encode().unwrap(),
             OutgoingPacket::Disconnect(mut packet) => packet.encode().unwrap(),
-            OutgoingPacket::PingResp => {
-                let mut buf = Vec::with_capacity(2);
-
-                buf.push(PINGRESP_IDENTIFIER << 4);
-                buf.push(0);
-                buf
-            }
+            OutgoingPacket::PingResp => vec![PINGRESP_IDENTIFIER << 4, 0],
         };
 
         self.stream.write_all(&encoded_packet).await?;
