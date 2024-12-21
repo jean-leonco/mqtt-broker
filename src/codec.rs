@@ -1,13 +1,15 @@
 use std::io::Cursor;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
-use crate::{connection::PacketError, constants::MAX_STRING_LENGTH};
+use crate::packets::CommonPacketError;
 
 /// Decode a variable byte integer.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
-pub(crate) fn decode_variable_byte_int(buf: &mut Cursor<&[u8]>) -> Result<usize, PacketError> {
+pub(crate) fn decode_variable_byte_int(
+    buf: &mut Cursor<&[u8]>,
+) -> Result<usize, CommonPacketError> {
     let mut multiplier = 1;
     let mut decoded_value = 0;
 
@@ -22,7 +24,7 @@ pub(crate) fn decode_variable_byte_int(buf: &mut Cursor<&[u8]>) -> Result<usize,
 
         // Ensure multiplier does not exceed the specification limits
         if multiplier > 128 * 128 * 128 {
-            return Err(PacketError::MalformedPacket);
+            return Err(CommonPacketError::IntOverflow);
         }
 
         multiplier *= 128;
@@ -39,27 +41,27 @@ pub(crate) fn decode_variable_byte_int(buf: &mut Cursor<&[u8]>) -> Result<usize,
 /// Decode a UTF-8 string.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
-pub(crate) fn decode_utf8_string(buf: &mut Cursor<&[u8]>) -> Result<String, PacketError> {
+pub(crate) fn decode_utf8_string(buf: &mut Cursor<&[u8]>) -> Result<String, CommonPacketError> {
     // Read the length of the string
     let len = buf.get_u16() as usize;
 
     // Read the string data
     let mut encoded_value = vec![0; len];
     if std::io::Read::read_exact(buf, &mut encoded_value).is_err() {
-        return Err(PacketError::UnexpectedError);
+        return Err(CommonPacketError::UnexpectedError);
     }
 
     // Convert to UTF-8 string
     match String::from_utf8(encoded_value) {
         Ok(value) => Ok(value),
-        Err(_) => Err(PacketError::UnexpectedError),
+        Err(_) => Err(CommonPacketError::UnexpectedError),
     }
 }
 
 /// Decode a binary buf.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901012>
-pub(crate) fn decode_binary_data(buf: &mut Cursor<&[u8]>) -> Result<BytesMut, PacketError> {
+pub(crate) fn decode_binary_data(buf: &mut Cursor<&[u8]>) -> Result<BytesMut, CommonPacketError> {
     // Read the length of the binary data
     let len = buf.get_u16() as usize;
 
@@ -67,14 +69,13 @@ pub(crate) fn decode_binary_data(buf: &mut Cursor<&[u8]>) -> Result<BytesMut, Pa
     let mut decoded_value = BytesMut::with_capacity(len);
     match std::io::Read::read_exact(buf, &mut decoded_value) {
         Ok(()) => Ok(decoded_value),
-        Err(_) => Err(PacketError::UnexpectedError),
+        Err(_) => Err(CommonPacketError::UnexpectedError),
     }
 }
 
 /// Encode a variable byte integer.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
-///
 pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
     let capacity = match value {
         0..=127 => 1,
@@ -82,7 +83,8 @@ pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
         16_384..=2_097_151 => 3,
         _ => 4,
     };
-    let mut encoded_value = Vec::with_capacity(capacity);
+
+    let mut buf = Vec::with_capacity(capacity);
 
     for _ in 0..capacity {
         // Extract the 7 least significant bits from the current value
@@ -98,39 +100,58 @@ pub(crate) fn encode_variable_byte_int(mut value: u32) -> Vec<u8> {
             encoded_byte |= 128;
         }
 
-        encoded_value.push(encoded_byte);
+        buf.push(encoded_byte);
     }
 
-    encoded_value
+    buf
 }
 
-/// Encode a UTF-8 string.
+/// Write a variable byte integer into a buffer.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
+pub(crate) fn write_variable_byte_int(buf: &mut BytesMut, value: u32) {
+    let value = encode_variable_byte_int(value);
+    buf.put(&value[..]);
+}
+
+/// Write a UTF-8 string into a buffer.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
-pub(crate) fn encode_utf8_string(value: &str) -> Result<Vec<u8>, PacketError> {
+pub(crate) fn write_utf8_string(buf: &mut BytesMut, value: &str) -> Result<(), CommonPacketError> {
     let len = value.len();
+    let u16_len = u16::try_from(len).map_err(|_| CommonPacketError::IntOverflow)?;
 
-    if len > MAX_STRING_LENGTH {
-        return Err(PacketError::PacketTooLarge);
-    }
+    buf.put_u16(u16_len);
+    buf.put(value.as_bytes());
 
-    let mut encoded_value = Vec::with_capacity(2 + len);
-    encoded_value.extend(len.to_be_bytes());
-    encoded_value.extend(value.as_bytes());
-
-    Ok(encoded_value)
+    Ok(())
 }
 
-/// Encode a UTF-8 String Pair.
+/// Write a UTF-8 string pair into a buffer.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901013>
-pub(crate) fn encode_utf8_string_pair(
+pub(crate) fn write_utf8_string_pair(
+    buf: &mut BytesMut,
     (name, value): (&String, &String),
-) -> Result<Vec<u8>, PacketError> {
-    let mut name = encode_utf8_string(name)?;
-    let mut value = encode_utf8_string(value)?;
+) -> Result<(), CommonPacketError> {
+    write_utf8_string(buf, name)?;
+    write_utf8_string(buf, value)?;
 
-    name.append(&mut value);
+    Ok(())
+}
 
-    Ok(name)
+/// Converts a usize to u32 and write as a variable byte integer into a buffer.
+///
+/// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
+pub(crate) fn write_usize_as_var_int(
+    buf: &mut BytesMut,
+    value: usize,
+) -> Result<(), CommonPacketError> {
+    match u32::try_from(value) {
+        Ok(value) => {
+            write_variable_byte_int(buf, value);
+            Ok(())
+        }
+        Err(_) => Err(CommonPacketError::IntOverflow),
+    }
 }

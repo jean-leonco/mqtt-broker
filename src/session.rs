@@ -1,156 +1,230 @@
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
-use log::{debug, error, info};
-use tokio::{io, sync::mpsc, time::Instant};
+use log::{debug, error, info, trace, warn};
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::{
     broker_state::{BrokerEvent, BrokerState},
-    connection::{Connection, IncomingPacket, OutgoingPacket, PacketError},
+    connection::{Connection, ConnectionError},
+    constants,
     packets::{
         conn_ack_packet::{ConnAckPacket, ConnectReasonCode},
+        connect_packet::ConnectPacket,
         disconnect_packet::{DisconnectPacket, DisconnectReasonCode},
+        ping_req_packet::PingReqPacket,
+        ping_resp_packet::PingRespPacket,
+        subscribe_packet::SubscribePacket,
+        CommonPacketError,
     },
+};
+
+use self::constants::{
+    AUTH_PACKET_TYPE, CONNACK_PACKET_TYPE, CONNECT_PACKET_TYPE, DISCONNECT_PACKET_TYPE,
+    PINGREQ_PACKET_TYPE, PINGRESP_PACKET_TYPE, PUBACK_PACKET_TYPE, PUBCOMP_PACKET_TYPE,
+    PUBLISH_PACKET_TYPE, PUBREC_PACKET_TYPE, PUBREL_PACKET_TYPE, SUBACK_PACKET_TYPE,
+    SUBSCRIBE_PACKET_TYPE, UNSUBACK_PACKET_TYPE, UNSUBSCRIBE_PACKET_TYPE,
 };
 
 pub(crate) struct Session {
     connection: Connection,
-    rx: mpsc::Receiver<BrokerEvent>,
     broker_state: BrokerState,
     client_id: String,
     keep_alive: Duration,
     expiry_interval: Option<Duration>,
-}
-
-#[derive(Debug)]
-pub(crate) enum SessionError {
-    PacketError(PacketError),
-    IoError(io::Error),
-}
-
-impl fmt::Display for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
-            Self::IoError(error) => write!(f, "IO Error: {error}"),
-        }
-    }
+    last_activity: Instant,
 }
 
 impl Session {
-    pub async fn handle_connection(
+    pub(crate) async fn handle_connection(
         mut connection: Connection,
         mut broker_state: BrokerState,
-    ) -> Result<(), SessionError> {
-        let first_packet = connection.read_packet().await.map_err(SessionError::PacketError)?;
+    ) -> Result<(), ConnectionError> {
+        debug!("Handling new connection");
 
-        let mut session = match first_packet {
-            Some(IncomingPacket::Connect(packet)) => {
-                let (session_present, rx) =
-                    broker_state.save_session(packet.client_id.clone(), packet.clean_start);
+        let connect = connection
+            .read_packet::<ConnectPacket>()
+            .await?
+            .ok_or(ConnectionError::Common(CommonPacketError::ProtocolError(None)))?;
 
-                let response = ConnAckPacket::builder()
-                    .session_present(session_present)
-                    .reason_code(ConnectReasonCode::Success)
-                    .build();
-                connection
-                    .write_packet(OutgoingPacket::ConnAck(response))
-                    .await
-                    .map_err(SessionError::IoError)?;
+        let (session_present, rx) =
+            broker_state.save_session(connect.client_id.clone(), connect.clean_start);
 
-                let keep_alive = Duration::from_secs(u64::from(packet.keep_alive));
+        info!("Client {} connected with clean_start={}", connect.client_id, connect.clean_start);
+        debug!("Session present: {}", session_present);
 
-                let expiry_interval = packet
-                    .session_expiry_interval
-                    .map(|expiry_interval| Duration::from_secs(u64::from(expiry_interval)));
+        let keep_alive = Duration::from_secs(u64::from(connect.keep_alive));
 
-                Self {
-                    connection,
-                    rx,
-                    broker_state,
-                    client_id: packet.client_id,
-                    keep_alive,
-                    expiry_interval,
-                }
-            }
-            Some(_) => {
-                error!("First packet was not CONNECT");
-                return Err(SessionError::PacketError(PacketError::ProtocolError));
-            }
-            None => {
-                error!("No packet received");
-                return Err(SessionError::PacketError(PacketError::ProtocolError));
-            }
+        let expiry_interval = connect
+            .properties
+            .session_expiry_interval
+            .map(|expiry_interval| Duration::from_secs(u64::from(expiry_interval)));
+
+        debug!(
+            "Client settings - keep_alive: {:?}, expiry_interval: {:?}",
+            keep_alive, expiry_interval
+        );
+
+        let mut session = Self {
+            connection,
+            broker_state,
+            client_id: connect.client_id,
+            keep_alive,
+            expiry_interval,
+            last_activity: Instant::now(),
         };
 
-        if let Err(e) = session.run().await {
-            // Discard session regardless of an error
-            session.discard_session();
+        let response = ConnAckPacket::builder()
+            .session_present(session_present)
+            .reason_code(ConnectReasonCode::Success)
+            .build();
 
+        session.connection.write_packet(&response).await?;
+        debug!("Sent CONNACK to client {}", session.client_id);
+
+        if let Err(e) = session.run(rx).await {
+            session.discard_session();
+            error!("Session for client {} ended with error: {:?}", session.client_id, e);
             return Err(e);
         }
 
         Ok(())
     }
 
-    async fn run(&mut self) -> Result<(), SessionError> {
-        let mut last_activity = Instant::now();
+    async fn run(&mut self, mut rx: mpsc::Receiver<BrokerEvent>) -> Result<(), ConnectionError> {
+        let timeout = self.keep_alive.mul_f64(1.5);
+        debug!("Starting session loop for client {} with timeout {:?}", self.client_id, timeout);
 
         loop {
+            let deadline = self.last_activity + timeout;
+
             tokio::select! {
-                packet = self.connection.read_packet() => {
-                    match packet.map_err(SessionError::PacketError)? {
-                        Some(packet) => {
-                            last_activity = Instant::now();
-
-                            match packet {
-                                IncomingPacket::Connect(_) => {
-                                    let packet = DisconnectPacket::builder()
-                                        .reason_code(DisconnectReasonCode::ProtocolError)
-                                        .reason_string("A Client can only send the CONNECT packet once over a Network Connection.".to_string())
-                                        .build();
-
-                                    self.connection
-                                        .write_packet(OutgoingPacket::Disconnect(packet))
-                                        .await
-                                        .map_err(SessionError::IoError)?;
-
-                                    return Ok(());
-                                }
-                                IncomingPacket::Subscribe(subscribe_packet) => {
-                                    for topic in subscribe_packet.topics {
-                                        self.broker_state.subscribe(topic.name, &self.client_id);
-                                    }
-                                },
-                                IncomingPacket::Publish => {
-                                    self.broker_state.publish("some/topic");
-                                }
-                                IncomingPacket::PingReq => {
-                                    self.connection
-                                        .write_packet(OutgoingPacket::PingResp)
-                                        .await
-                                        .map_err(SessionError::IoError)?;
-                                }
-                                IncomingPacket::Disconnect(packet) => {
-                                    info!("Client {} disconneted with reason code: {}", self.client_id, packet.reason_code);
-                                    return Ok(());
-                                }
-                            }
+                // Handle broker events
+                event = rx.recv() => {
+                    match event {
+                        Some(event) => {
+                          debug!("Client {} received broker event: {:?}", self.client_id, event);
                         }
                         None => {
-                            if self.keep_alive > Duration::from_secs(0)
-                                && Instant::now().duration_since(last_activity)
-                                    > self.keep_alive.mul_f64(1.5)
-                            {
-                                return Ok(());
-                            }
+                            // The channel is closed, session can exit
+                            return Ok(());
                         }
                     }
-                }
-                event = self.rx.recv() => {
-                    debug!("Received event {:?}", event);
+                },
+
+                // Handle incoming packets
+                packet_result = self.handle_incoming_packet() => {
+                    let should_disconnect = packet_result?;
+
+                    if should_disconnect {
+                        info!("Client {} disconnected", self.client_id);
+                        return Ok(());
+                    }
+
+                    self.last_activity = Instant::now();
+                },
+
+                // Handle keep-alive timeout
+                _ = tokio::time::sleep_until(deadline) => {
+                    warn!("Keep-alive timeout for client {}", self.client_id);
+                    return Ok(());
                 }
             }
         }
+    }
+
+    async fn handle_incoming_packet(&mut self) -> Result<bool, ConnectionError> {
+        match self.connection.peek_packet_type().await? {
+            None => {
+                debug!("Connection reset by client {}", self.client_id);
+                return Ok(true);
+            }
+
+            Some(packet_type) => match packet_type {
+                PUBACK_PACKET_TYPE
+                | PUBREC_PACKET_TYPE
+                | PUBREL_PACKET_TYPE
+                | PUBCOMP_PACKET_TYPE
+                | UNSUBSCRIBE_PACKET_TYPE
+                | AUTH_PACKET_TYPE => todo!("Not implemented: {packet_type}"),
+
+                SUBSCRIBE_PACKET_TYPE => {
+                    let subscribe =
+                        self.connection.read_packet::<SubscribePacket>().await?.unwrap();
+
+                    debug!(
+                        "Client {} subscribing to {} topics",
+                        self.client_id,
+                        subscribe.topics.len()
+                    );
+
+                    for topic in subscribe.topics {
+                        trace!("Client {} subscribing to topic {}", self.client_id, topic.topic);
+                        self.broker_state.subscribe(topic.topic, &self.client_id);
+                    }
+                }
+
+                PUBLISH_PACKET_TYPE => {
+                    self.broker_state.publish("some/topic");
+                    trace!("Client {} published message", self.client_id);
+                }
+
+                PINGREQ_PACKET_TYPE => {
+                    self.connection.read_packet::<PingReqPacket>().await?.unwrap();
+                    self.connection.write_packet(&PingRespPacket {}).await?;
+                }
+
+                DISCONNECT_PACKET_TYPE => {
+                    let disconnect =
+                        self.connection.read_packet::<DisconnectPacket>().await?.unwrap();
+
+                    info!(
+                        "Client {} sent DISCONNECT with reason code: {}",
+                        self.client_id, disconnect.reason_code
+                    );
+
+                    return Ok(false);
+                }
+
+                CONNECT_PACKET_TYPE => {
+                    let disconnect = DisconnectPacket::builder()
+                            .reason_code(DisconnectReasonCode::ProtocolError)
+                            .reason_string("A Client can only send the CONNECT packet once over a Network Connection".into())
+                            .build();
+
+                    warn!("Client {} sent unexpected CONNECT packet", self.client_id);
+                    self.connection.write_packet(&disconnect).await?;
+                    return Ok(false);
+                }
+
+                CONNACK_PACKET_TYPE | SUBACK_PACKET_TYPE | UNSUBACK_PACKET_TYPE
+                | PINGRESP_PACKET_TYPE => {
+                    // Packets reserved to server -> client communication
+                    let disconnect = DisconnectPacket::builder()
+                        .reason_code(DisconnectReasonCode::ProtocolError)
+                        .reason_string(format!("Packet {packet_type} is reserved for Server use"))
+                        .build();
+
+                    warn!(
+                        "Client {} sent server-to-client packet type: {}",
+                        self.client_id, packet_type
+                    );
+                    self.connection.write_packet(&disconnect).await?;
+                    return Ok(false);
+                }
+
+                _ => {
+                    let disconnect = DisconnectPacket::builder()
+                        .reason_code(DisconnectReasonCode::ProtocolError)
+                        .build();
+
+                    warn!("Client {} sent unknown packet type: {}", self.client_id, packet_type);
+                    self.connection.write_packet(&disconnect).await?;
+                    return Ok(false);
+                }
+            },
+        };
+
+        Ok(false)
     }
 
     fn discard_session(&mut self) {
@@ -158,5 +232,6 @@ impl Session {
             self.broker_state
                 .schedule_discard_session(&self.client_id, Instant::now() + expiry_interval);
         }
+        info!("Discarding session for client {}", self.client_id);
     }
 }

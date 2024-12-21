@@ -28,11 +28,11 @@ pub(crate) struct BrokerState {
 }
 
 impl BrokerState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { sessions: Arc::new(DashMap::new()) }
     }
 
-    pub fn save_session(
+    pub(crate) fn save_session(
         &mut self,
         client_id: String,
         clean_start: bool,
@@ -46,7 +46,7 @@ impl BrokerState {
         }
     }
 
-    pub fn schedule_discard_session(&mut self, client_id: &str, expires_at: Instant) {
+    pub(crate) fn schedule_discard_session(&mut self, client_id: &str, expires_at: Instant) {
         debug!("Session will expires at: {expires_at:?}");
 
         let session = self.sessions.remove(client_id);

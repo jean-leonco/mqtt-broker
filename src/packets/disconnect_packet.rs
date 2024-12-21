@@ -1,68 +1,20 @@
-use bytes::Buf;
-use log::debug;
+use bytes::{Buf, BufMut, BytesMut};
 use std::{collections::HashMap, fmt, io::Cursor};
 
 use crate::{
     codec::{
-        decode_variable_byte_int, encode_utf8_string, encode_utf8_string_pair,
-        encode_variable_byte_int,
+        decode_variable_byte_int, encode_variable_byte_int, write_usize_as_var_int,
+        write_utf8_string, write_utf8_string_pair,
     },
-    connection::PacketError,
-    constants::{DISCONNECT_IDENTIFIER, MAX_PACKET_SIZE},
+    constants::{DISCONNECT_PACKET_TYPE, MAX_PACKET_SIZE},
 };
+
+use super::{CommonPacketError, DecodablePacket, EncodablePacket};
 
 const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
 const USER_PROPERTY_IDENTIFIER: u8 = 0x26;
 const SERVER_REFERENCE_IDENTIFIER: u8 = 0x1C;
-
-#[derive(Debug)]
-pub(crate) enum EncodeError {
-    PacketError(PacketError),
-}
-
-impl fmt::Display for EncodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
-        }
-    }
-}
-
-pub struct DisconnectPacketBuilder<State>(State);
-
-pub struct NeedsReasonCode(());
-
-pub struct ReadyToBuild {
-    reason_code: DisconnectReasonCode,
-    reason_string: Option<String>,
-}
-
-impl DisconnectPacketBuilder<NeedsReasonCode> {
-    pub fn reason_code(
-        self,
-        reason_code: DisconnectReasonCode,
-    ) -> DisconnectPacketBuilder<ReadyToBuild> {
-        DisconnectPacketBuilder(ReadyToBuild { reason_code, reason_string: None })
-    }
-}
-
-impl DisconnectPacketBuilder<ReadyToBuild> {
-    pub fn reason_string(self, reason_string: String) -> DisconnectPacketBuilder<ReadyToBuild> {
-        DisconnectPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
-    }
-
-    pub fn build(self) -> DisconnectPacket {
-        DisconnectPacket {
-            reason_code: self.0.reason_code,
-            session_expiry_interval: None,
-            reason_string: self.0.reason_string,
-            user_properties: None,
-            server_reference: None,
-            remaining_len: 0,
-        }
-    }
-}
 
 /// Represents the Reason Codes sent when disconnecting from an MQTT connection.
 #[derive(Debug, Clone, Copy)]
@@ -186,7 +138,7 @@ pub(crate) enum DisconnectReasonCode {
 }
 
 impl DisconnectReasonCode {
-    pub fn from_u8(value: u8) -> Option<Self> {
+    fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x00 => Some(Self::NormalDisconnection),
             0x04 => Some(Self::DisconnectWithWillMessage),
@@ -221,8 +173,7 @@ impl DisconnectReasonCode {
         }
     }
 
-    /// Converts the `DisconnectReasonCode` to its numeric value.
-    pub fn to_u8(self) -> u8 {
+    fn to_u8(self) -> u8 {
         self as u8
     }
 }
@@ -264,29 +215,186 @@ impl fmt::Display for DisconnectReasonCode {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum DecodeError {
-    PacketError(PacketError),
-}
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
-        }
-    }
-}
-
 /// The DISCONNECT packet is the final MQTT Control Packet sent from the Client or the Server.
-/// It indicates the reason why the Network Connection is being closed.
-/// The Client or Server MAY send a DISCONNECT packet before closing the Network Connection.
-/// If the Connection closes without sending a DISCONNECT packet with Reason Code 0x00 (Normal disconnection)
-/// and a Will Message is in place, the Will Message is published.
 #[derive(Debug)]
 pub(crate) struct DisconnectPacket {
     /// The Reason Code indicating why the DISCONNECT is occurring.
     pub reason_code: DisconnectReasonCode,
 
+    /// Disconnect properties.
+    properties: DisconnectPacketProperties,
+}
+
+#[derive(Debug)]
+pub(crate) enum DisconnectPacketDecodeError {
+    Common(CommonPacketError),
+}
+
+impl std::error::Error for DisconnectPacketDecodeError {}
+
+impl fmt::Display for DisconnectPacketDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Common(e) => write!(f, "Common Error: {e}"),
+        }
+    }
+}
+
+impl DecodablePacket for DisconnectPacket {
+    type Error = DisconnectPacketDecodeError;
+
+    fn packet_type() -> u8 {
+        DISCONNECT_PACKET_TYPE
+    }
+
+    fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
+        let packet_type = fixed_header >> 4;
+        if packet_type != Self::packet_type() {
+            let e = CommonPacketError::MalformedPacket(Some(format!(
+                "Invalid packet type: {packet_type}"
+            )));
+            return Err(Self::Error::Common(e));
+        }
+
+        // Reserved flags (4 LSB) must be equal to 0000
+        let flags = fixed_header << 4;
+        if flags != 0x0 {
+            let e =
+                CommonPacketError::MalformedPacket(Some("Fixed header flags are reserved".into()));
+            return Err(Self::Error::Common(e));
+        }
+
+        Ok(())
+    }
+
+    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+        //  if the remaining length is less than 1, normal disconnection can be assumed
+        if cursor.remaining() == 0 {
+            return Ok(Self {
+                reason_code: DisconnectReasonCode::NormalDisconnection,
+                properties: DisconnectPacketProperties {
+                    session_expiry_interval: None,
+                    reason_string: None,
+                    user_properties: None,
+                    server_reference: None,
+                },
+            });
+        }
+
+        let raw_reason_code = cursor.get_u8();
+        let Some(reason_code) = DisconnectReasonCode::from_u8(raw_reason_code) else {
+            let e = CommonPacketError::MalformedPacket(Some(format!(
+                "Reason code is not a valid reason code: {raw_reason_code}"
+            )));
+            return Err(Self::Error::Common(e));
+        };
+
+        let properties_len = decode_variable_byte_int(cursor).map_err(Self::Error::Common)?;
+
+        let properties = DisconnectPacketProperties::decode(cursor, properties_len)?;
+
+        Ok(Self { reason_code, properties })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum DisconnectPacketEncodeError {
+    Common(CommonPacketError),
+}
+
+impl std::error::Error for DisconnectPacketEncodeError {}
+
+impl fmt::Display for DisconnectPacketEncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Common(e) => write!(f, "Common Error: {e}"),
+        }
+    }
+}
+
+impl EncodablePacket for DisconnectPacket {
+    type Error = DisconnectPacketEncodeError;
+
+    fn encode(&self) -> Result<bytes::BytesMut, Self::Error> {
+        let mut properties_buf = BytesMut::new();
+        self.properties.write_properties(&mut properties_buf, self.reason_code)?;
+
+        let properties_len = encode_variable_byte_int(
+            u32::try_from(properties_buf.len())
+                .map_err(|_| Self::Error::Common(CommonPacketError::IntOverflow))?,
+        );
+
+        let mut buf = BytesMut::new();
+
+        // Fixed header
+        buf.put_u8(DISCONNECT_PACKET_TYPE << 4);
+
+        // Remaining length: reason code + properties len + properties
+        let remaining_len = 1 + properties_buf.len() + properties_buf.len();
+        write_usize_as_var_int(&mut buf, remaining_len).map_err(Self::Error::Common)?;
+
+        // Reason code
+        buf.put_u8(self.reason_code.to_u8());
+
+        // Properties
+        buf.put(&properties_len[..]);
+        buf.put(properties_buf);
+
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Self::Error::Common(CommonPacketError::PacketTooLarge(None)));
+        }
+
+        Ok(buf)
+    }
+}
+
+impl DisconnectPacket {
+    pub(crate) fn builder() -> DisconnectPacketBuilder<NeedsReasonCode> {
+        DisconnectPacketBuilder(NeedsReasonCode(()))
+    }
+}
+
+pub struct DisconnectPacketBuilder<State>(State);
+
+pub struct NeedsReasonCode(());
+
+pub struct ReadyToBuild {
+    reason_code: DisconnectReasonCode,
+    reason_string: Option<String>,
+}
+
+impl DisconnectPacketBuilder<NeedsReasonCode> {
+    pub(crate) fn reason_code(
+        self,
+        reason_code: DisconnectReasonCode,
+    ) -> DisconnectPacketBuilder<ReadyToBuild> {
+        DisconnectPacketBuilder(ReadyToBuild { reason_code, reason_string: None })
+    }
+}
+
+impl DisconnectPacketBuilder<ReadyToBuild> {
+    pub(crate) fn reason_string(
+        self,
+        reason_string: String,
+    ) -> DisconnectPacketBuilder<ReadyToBuild> {
+        DisconnectPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
+    }
+
+    pub(crate) fn build(self) -> DisconnectPacket {
+        DisconnectPacket {
+            reason_code: self.0.reason_code,
+            properties: DisconnectPacketProperties {
+                session_expiry_interval: None,
+                reason_string: self.0.reason_string,
+                user_properties: None,
+                server_reference: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DisconnectPacketProperties {
     /// Represents the Session Expiry Interval in seconds.
     /// The Session Expiry Interval MUST NOT be sent on a DISCONNECT by the Server.
     session_expiry_interval: Option<u32>,
@@ -295,52 +403,34 @@ pub(crate) struct DisconnectPacket {
     reason_string: Option<String>,
 
     /// User properties in key-value pairs.
-    user_properties: Option<HashMap<String, String>>, // TODO: The same name is allowed to appear more than once
+    user_properties: Option<HashMap<String, String>>,
 
     /// Encoded String which can be used by the Client to identify another Server to use.
     server_reference: Option<String>,
-
-    remaining_len: usize,
 }
 
-impl DisconnectPacket {
-    pub fn builder() -> DisconnectPacketBuilder<NeedsReasonCode> {
-        DisconnectPacketBuilder(NeedsReasonCode(()))
+impl DisconnectPacketProperties {
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        len: usize,
+    ) -> Result<DisconnectPacketProperties, DisconnectPacketDecodeError> {
+        if len > 0 {
+            cursor.advance(len);
+        }
+
+        Ok(DisconnectPacketProperties {
+            session_expiry_interval: None,
+            reason_string: None,
+            user_properties: None,
+            server_reference: None,
+        })
     }
 
-    /// Encode the fixed header for the control packet.
-    ///
-    /// The MQTT fixed header is composed of:
-    /// - The control byte (the packet type and flags)
-    /// - The remaining length (variable-length integer)
-    ///
-    /// # Fixed Header Format
-    ///
-    /// | Bit       | 7   | 6   | 5   | 4   | 3   | 2   | 1   | 0   |
-    /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
-    /// | Byte 1    | Packet type           | Packet flags          |
-    /// | Byte 2    | Remaining Length                              |
-    fn encode_fixed_header(&self) -> Result<Vec<u8>, EncodeError> {
-        let remaining_len = u32::try_from(self.remaining_len)
-            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
-        let encoded_remaining_len = encode_variable_byte_int(remaining_len);
-
-        // Allocate enough space for the control packet type, flags and remaining length
-        let mut header = Vec::with_capacity(1 + encoded_remaining_len.len());
-
-        // Append the control packet, flags and remaining length to fixed header
-        header.push(DISCONNECT_IDENTIFIER << 4);
-        header.extend(encoded_remaining_len);
-
-        Ok(header)
-    }
-
-    /// Encode the `DisconnectPacket` into bytes.
-    /// This attempts to respect MQTT property size constraints and will omit properties that don't fit.
-    ///
-    /// # Errors
-    /// Returns an error if packet size exceeds `MAX_PACKET_SIZE`.
-    pub fn encode(&mut self) -> Result<Vec<u8>, EncodeError> {
+    fn write_properties(
+        &self,
+        buf: &mut BytesMut,
+        reason_code: DisconnectReasonCode,
+    ) -> Result<(), DisconnectPacketEncodeError> {
         // Check if we have any properties at all
         let has_properties = self.session_expiry_interval.is_some()
             || self.reason_string.is_some()
@@ -348,112 +438,34 @@ impl DisconnectPacket {
             || self.server_reference.is_some();
 
         // If reason code is NormalDisconnection (0x00) and no properties, we can omit Reason Code and Property Length.
-        if matches!(self.reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties
-        {
-            debug!("NormalDisconnection with no properties: sending minimal packet");
-            return self.encode_fixed_header();
+        if matches!(reason_code, DisconnectReasonCode::NormalDisconnection) && !has_properties {
+            return Ok(());
         }
 
-        let mut properties = Vec::new();
-
-        // Add Session Expiry Interval if present
         if let Some(session_expiry_interval) = self.session_expiry_interval {
-            properties.push(SESSION_EXPIRY_INTERVAL_IDENTIFIER);
-            properties.extend(session_expiry_interval.to_be_bytes());
+            buf.put_u8(SESSION_EXPIRY_INTERVAL_IDENTIFIER);
+            buf.put_u32(session_expiry_interval);
         }
 
-        // Add Server Reference if present
         if let Some(server_reference) = &self.server_reference {
-            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
-
-            let server_reference =
-                encode_utf8_string(server_reference).map_err(EncodeError::PacketError)?;
-
-            properties.push(SERVER_REFERENCE_IDENTIFIER);
-            properties.extend(server_reference);
+            buf.put_u8(SERVER_REFERENCE_IDENTIFIER);
+            write_utf8_string(buf, server_reference)
+                .map_err(DisconnectPacketEncodeError::Common)?;
         }
 
-        // Add Reason String if present
         if let Some(reason_string) = &self.reason_string {
-            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
-
-            let reason_string =
-                encode_utf8_string(reason_string).map_err(EncodeError::PacketError)?;
-
-            properties.push(REASON_STRING_IDENTIFIER);
-            properties.extend(reason_string);
+            buf.put_u8(REASON_STRING_IDENTIFIER);
+            write_utf8_string(buf, reason_string).map_err(DisconnectPacketEncodeError::Common)?;
         }
 
-        // Add User Properties if present
         if let Some(user_properties) = &self.user_properties {
-            // TODO: The sender MUST NOT send this Property if it would increase the size of the DISCONNECT packet beyond the Maximum Packet Size specified by the receiver.
-
             for user_property in user_properties {
-                properties.push(USER_PROPERTY_IDENTIFIER);
-                properties.extend(
-                    encode_utf8_string_pair(user_property).map_err(EncodeError::PacketError)?,
-                );
+                buf.put_u8(USER_PROPERTY_IDENTIFIER);
+                write_utf8_string_pair(buf, user_property)
+                    .map_err(DisconnectPacketEncodeError::Common)?;
             }
         }
 
-        let properties_len = u32::try_from(properties.len())
-            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
-        let properties_len = encode_variable_byte_int(properties_len);
-
-        // Remaining Length: Reason code + Property length + Properties
-        self.remaining_len += 1 + properties_len.len() + properties.len();
-
-        let fixed_header = self.encode_fixed_header()?;
-
-        // Build packet: Fixed header + Reason code + Property length + Properties
-        let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);
-        packet.extend(fixed_header);
-        packet.push(self.reason_code.to_u8());
-        packet.extend(properties_len);
-        packet.extend(properties);
-
-        // Ensure the packet isn't larger than the MAX_PACKET_SIZE
-        if packet.len() > MAX_PACKET_SIZE {
-            return Err(EncodeError::PacketError(PacketError::PacketTooLarge));
-        }
-
-        Ok(packet)
-    }
-
-    pub fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        if buf.remaining() == 0 {
-            return Ok(Self {
-                reason_code: DisconnectReasonCode::NormalDisconnection,
-                session_expiry_interval: None,
-                reason_string: None,
-                user_properties: None,
-                server_reference: None,
-                remaining_len: 0,
-            });
-        }
-
-        let Some(reason_code) = DisconnectReasonCode::from_u8(buf.get_u8()) else {
-            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
-        };
-
-        let properties_len = decode_variable_byte_int(buf).map_err(DecodeError::PacketError)?;
-
-        let (session_expiry_interval, reason_string, user_properties, server_reference) =
-            if properties_len == 0 {
-                (None, None, None, None)
-            } else {
-                // TODO: Decode properties
-                buf.advance(properties_len);
-                (None, None, None, None)
-            };
-
-        Ok(Self {
-            reason_code,
-            session_expiry_interval,
-            reason_string,
-            user_properties,
-            server_reference,
-            remaining_len: 0,
-        })
+        Ok(())
     }
 }

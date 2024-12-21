@@ -1,4 +1,3 @@
-import time
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -19,12 +18,18 @@ def on_connect(
     print(f"Connected with result code {reason_code}")
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
-    client.subscribe("some/topic", options=SubscribeOptions(qos=0,retainAsPublished=False, retainHandling=SubscribeOptions.RETAIN_SEND_IF_NEW_SUB))
+    client.subscribe(
+        "some/topic",
+        options=SubscribeOptions(
+            qos=0,
+            noLocal=False,
+            retainAsPublished=False,
+            retainHandling=SubscribeOptions.RETAIN_SEND_IF_NEW_SUB,
+        ),
+    )
 
     client.publish("some/topic", "data")
 
-    time.sleep(6)
-    client.disconnect()
 
 
 # The callback for when a PUBLISH message is received from the server.

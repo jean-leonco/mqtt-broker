@@ -1,75 +1,40 @@
 use std::{collections::HashMap, fmt, io::Cursor};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 
 use crate::{
     codec::{decode_binary_data, decode_utf8_string, decode_variable_byte_int},
-    connection::PacketError,
-    constants::{PROTOCOL_NAME, PROTOCOL_VERSION},
+    constants::{CONNECT_PACKET_TYPE, PROTOCOL_NAME, PROTOCOL_VERSION},
 };
+
+use super::{CommonPacketError, DecodablePacket};
 
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct ConnectPacket {
-    /// The Protocol Name is a UTF-8 Encoded String that represents the protocol name “MQTT”.
+    /// The protocol name is a utf-8 encoded string that represents the protocol name “MQTT”.
     pub protocol_name: String,
 
-    /// Represents the revision level of the protocol used by the Client. The value of the Protocol Version field for version 5.0 of the protocol is 5 (0x05).
+    /// Represents the revision level of the protocol used by the client.
     pub protocol_version: u8,
 
-    /// Specifies whether the Connection starts a new Session or is a continuation of an existing Session.
+    /// Specifies whether the connection starts a new session or is a continuation of an existing session.
     pub clean_start: bool,
 
-    /// Specifies the `QoS` level to be used when publishing the Will Message.
+    /// Specifies the `QoS` level to be used when publishing the will message.
     qos_level: u8,
 
-    /// Specifies if the Will Message is to be retained when it is published.
+    /// Specifies if the will message is to be retained when it is published.
     will_retain: bool,
 
-    /// Keep alive time interval measured in seconds.
-    ///
     /// It is the maximum time interval that is permitted to elapse between the point at which the Client finishes transmitting one MQTT Control Packet and the point it starts sending the next.
     pub keep_alive: u16,
 
-    /// Session Expiry Interval in seconds.
-    ///
-    /// If the Session Expiry Interval is 0xFFFFFFFF (`UINT_MAX`), the Session does not expire.
-    pub session_expiry_interval: Option<u32>,
+    /// Connect properties.
+    pub properties: ConnectPacketProperties,
 
-    /// The Client uses this value to limit the number of `QoS` 1 and `QoS` 2 publications that it is willing to process concurrently. There is no mechanism to limit the `QoS` 0 publications that the Server might try to send.
-    ///
-    /// The value of Receive Maximum applies only to the current Network Connection. If the Receive Maximum value is absent then its value defaults to 65,535.
-    receive_maximum: Option<u16>,
-
-    /// Represents the Maximum Packet Size the Client is willing to accept. If the Maximum Packet Size is not present, no limit on the packet size is imposed beyond the limitations in the protocol as a result of the remaining length encoding and the protocol header sizes.
-    maximum_packet_size: Option<u32>,
-
-    /// This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server. The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection.
-    ///
-    /// A value of 0 indicates that the Client does not accept any Topic Aliases on this connection. If Topic Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client.
-    topic_alias_maximum: Option<u16>,
-
-    /// The Client uses this value to request the Server to return Response Information in the CONNACK. A value of 0 indicates that the Server MUST NOT return Response Information. If the value is 1 the Server MAY return Response Information in the CONNACK packet.
-    request_response_information: Option<bool>,
-
-    /// The Client uses this value to indicate whether the Reason String or User Properties are sent in the case of failures.
-    ///
-    /// If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT.
-    ///
-    /// If this value is 1, the Server MAY return a Reason String or User Properties on any packet where it is allowed.
-    request_problem_information: Option<bool>,
-
-    /// User Properties on the CONNECT packet can be used to send connection related properties from the Client to the Server.
-    user_properties: Option<HashMap<String, String>>,
-
-    /// Contains the name of the authentication method used for extended authentication.
-    authentication_method: Option<String>,
-
-    /// The contents of this data are defined by the authentication method.
-    authentication_data: Option<BytesMut>,
-
-    /// The Client Identifier (`ClientID`) identifies the Client to the Server. Each Client connecting to the Server has a unique `ClientID`.
+    /// The Client Identifier identifies the Client to the Server.
     pub client_id: String,
 
     /// The will topic.
@@ -83,113 +48,145 @@ pub(crate) struct ConnectPacket {
 }
 
 #[derive(Debug)]
-pub(crate) enum DecodeError {
-    PacketError(PacketError),
-    UnsupportedProtocolVersion,
-    ClientIdentifierNotValid,
+pub(crate) enum ConnectPacketDecodeError {
+    Common(CommonPacketError),
+    UnsupportedProtocolVersion(Option<String>),
+    ClientIdentifierNotValid(Option<String>),
 }
 
-impl fmt::Display for DecodeError {
+impl std::error::Error for ConnectPacketDecodeError {}
+
+impl fmt::Display for ConnectPacketDecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
-            Self::UnsupportedProtocolVersion => write!(f, "Unsupported Protocol Version"),
-            Self::ClientIdentifierNotValid => write!(f, "Client Identifier Not Valid"),
+            Self::Common(e) => write!(f, "Common Error: {e}"),
+
+            Self::UnsupportedProtocolVersion(Some(reason)) => {
+                write!(f, "Unsupported Protocol Version: {reason}")
+            }
+            Self::UnsupportedProtocolVersion(None) => write!(f, "Unsupported Protocol Version"),
+
+            Self::ClientIdentifierNotValid(Some(reason)) => {
+                write!(f, "Client Identifier Not Valid: {reason}")
+            }
+            Self::ClientIdentifierNotValid(None) => write!(f, "Client Identifier Not Valid"),
         }
     }
 }
 
-impl ConnectPacket {
-    /// Decode a input reader into the `ConnectPacket`.
-    pub fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let protocol_name = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+impl DecodablePacket for ConnectPacket {
+    type Error = ConnectPacketDecodeError;
+
+    fn packet_type() -> u8 {
+        CONNECT_PACKET_TYPE
+    }
+
+    fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
+        let packet_type = fixed_header >> 4;
+        if packet_type != Self::packet_type() {
+            let e = CommonPacketError::MalformedPacket(Some(format!(
+                "Invalid packet type: {packet_type}"
+            )));
+            return Err(Self::Error::Common(e));
+        }
+
+        // Reserved flags (4 LSB) must be equal to 0000
+        let flags = fixed_header << 4;
+        if flags != 0x0 {
+            let e =
+                CommonPacketError::MalformedPacket(Some("Fixed header flags are reserved".into()));
+            return Err(Self::Error::Common(e));
+        }
+
+        Ok(())
+    }
+
+    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+        let protocol_name = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
         if protocol_name != PROTOCOL_NAME {
-            return Err(DecodeError::UnsupportedProtocolVersion);
+            let e = Some(format!("Unsupported protocol name: {protocol_name}"));
+            return Err(Self::Error::UnsupportedProtocolVersion(e));
         }
 
-        let protocol_version = buf.get_u8();
+        let protocol_version = cursor.get_u8();
         if protocol_version != PROTOCOL_VERSION {
-            return Err(DecodeError::UnsupportedProtocolVersion);
+            let e = Some(format!("Unsupported protocol version: {protocol_version}"));
+            return Err(Self::Error::UnsupportedProtocolVersion(e));
         }
 
-        let connect_flags = buf.get_u8();
+        let connect_flags = cursor.get_u8();
 
-        // The Server MUST validate that the reserved flag in the CONNECT packet is set to 0
-        if connect_flags & 1 != 0 {
-            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
+        // Reserved connect flag (last bit) must be set to 0
+        if connect_flags & 0x1 != 0x0 {
+            let e = CommonPacketError::MalformedPacket(Some("Connect flags are reserved".into()));
+            return Err(Self::Error::Common(e));
         }
 
-        let clean_start = (connect_flags >> 1) & 1 == 1;
-        let will_flag = (connect_flags >> 2) & 1 == 1;
-        let qos_level = (connect_flags >> 3) & 0b0000_0011;
-        let will_retain = (connect_flags >> 5) & 1 == 1;
-        let password_flag = (connect_flags >> 6) & 1 == 1;
-        let username_flag = (connect_flags >> 7) & 1 == 1;
+        let clean_start = connect_flags >> 1 & 1 == 1;
+        let will_flag = connect_flags >> 2 & 1 == 1;
+        let qos_level = connect_flags >> 3 & 0b0000_0011;
+        let will_retain = connect_flags >> 5 & 1 == 1;
+        let password_flag = connect_flags >> 6 & 1 == 1;
+        let username_flag = connect_flags >> 7 & 1 == 1;
 
-        // If the Will Flag is set to 0, then Will Retain MUST be set to 0
+        // If the will_flag is set to 0, then will_retain must be set to 0
         if !will_flag && will_retain {
-            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
+            let e = CommonPacketError::MalformedPacket(Some(
+                "Will retain must be 0 if will flag is 1".into(),
+            ));
+            return Err(Self::Error::Common(e));
         }
 
-        // If the Will Flag is set to 0, then the Will QoS MUST be set to 0
+        // If the will_flag is set to 0, then will_qos must be set to 0
         if !will_flag && qos_level != 0 {
-            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
+            let e = CommonPacketError::MalformedPacket(Some(
+                "Will QoS must be 0 if will flag is 0".into(),
+            ));
+            return Err(Self::Error::Common(e));
         }
 
-        // If the Will Flag is set to 1, the value of Will QoS can be 0, 1, or 2. A value of 3 is a Malformed Packet
+        // If the will_flag is set to 1, then will_qos can be 0, 1, or 2
         if qos_level > 2 {
-            return Err(DecodeError::PacketError(PacketError::MalformedPacket));
+            let e = CommonPacketError::MalformedPacket(Some(format!(
+                "Will QoS must be 0, 1 or 2. Got: {qos_level}"
+            )));
+            return Err(Self::Error::Common(e));
         }
 
-        let keep_alive = buf.get_u16();
+        let keep_alive = cursor.get_u16();
 
-        let properties_len = decode_variable_byte_int(buf).map_err(DecodeError::PacketError)?;
+        let properties_len = decode_variable_byte_int(cursor).map_err(Self::Error::Common)?;
 
-        let (
-            session_expiry_interval,
-            receive_maximum,
-            maximum_packet_size,
-            topic_alias_maximum,
-            request_response_information,
-            request_problem_information,
-            user_properties,
-            authentication_method,
-            authentication_data,
-        ) = if properties_len == 0 {
-            (None, None, None, None, None, None, None, None, None)
-        } else {
-            // TODO: Decode properties
-            buf.advance(properties_len);
-            (None, None, None, None, None, None, None, None, None)
-        };
+        let properties = ConnectPacketProperties::decode(cursor, properties_len)?;
 
-        let client_id = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+        let client_id = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
 
         if client_id.is_empty()
             || client_id.len() > 23
             || !client_id.chars().all(char::is_alphanumeric)
         {
-            return Err(DecodeError::ClientIdentifierNotValid);
+            let e = Some(format!("Client identifier is not valid"));
+            return Err(Self::Error::ClientIdentifierNotValid(e));
         }
 
         // TODO: Add will_properties and will_payload
 
         let will_topic = if will_flag {
-            let will_topic = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+            let will_topic = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
             Some(will_topic)
         } else {
             None
         };
 
         let username = if username_flag {
-            let username = decode_utf8_string(buf).map_err(DecodeError::PacketError)?;
+            let username = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
             Some(username)
         } else {
             None
         };
 
         let password = if password_flag {
-            let password = decode_binary_data(buf).map_err(DecodeError::PacketError)?;
+            let password = decode_binary_data(cursor).map_err(Self::Error::Common)?;
             Some(password)
         } else {
             None
@@ -202,19 +199,68 @@ impl ConnectPacket {
             qos_level,
             will_retain,
             keep_alive,
-            session_expiry_interval,
-            receive_maximum,
-            maximum_packet_size,
-            topic_alias_maximum,
-            request_response_information,
-            request_problem_information,
-            user_properties,
-            authentication_method,
-            authentication_data,
+            properties,
             client_id,
             will_topic,
             username,
             password,
+        })
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct ConnectPacketProperties {
+    /// Session Expiry Interval in seconds.
+    /// If the Session Expiry Interval is 0xFFFFFFFF (`UINT_MAX`), the Session does not expire.
+    pub session_expiry_interval: Option<u32>,
+
+    /// The Client uses this value to limit the number of `QoS` 1 and `QoS` 2 publications that it is willing to process concurrently.
+    /// If the Receive Maximum value is absent then its value defaults to 65,535.
+    receive_maximum: Option<u16>,
+
+    /// Represents the Maximum Packet Size the Client is willing to accept. If the Maximum Packet Size is not present, no limit on the packet size is imposed beyond the limitations in the protocol.
+    maximum_packet_size: Option<u32>,
+
+    /// This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server.
+    /// If Topic Alias Maximum is absent, the Server MUST NOT send any Topic Aliases to the Client.
+    topic_alias_maximum: Option<u16>,
+
+    /// The Client uses this value to request the Server to return Response Information in the CONNACK.
+    request_response_information: Option<bool>,
+
+    /// The Client uses this value to indicate whether the Reason String or User Properties are sent in the case of failures.
+    request_problem_information: Option<bool>,
+
+    /// User Properties on the CONNECT packet can be used to send connection related properties from the Client to the Server.
+    user_properties: Option<HashMap<String, String>>,
+
+    /// Contains the name of the authentication method used for extended authentication.
+    authentication_method: Option<String>,
+
+    /// The data used to authenticate.
+    authentication_data: Option<Bytes>,
+}
+
+impl ConnectPacketProperties {
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        len: usize,
+    ) -> Result<ConnectPacketProperties, ConnectPacketDecodeError> {
+        if len > 0 {
+            cursor.advance(len);
+        }
+
+        Ok(ConnectPacketProperties {
+            session_expiry_interval: None,
+            receive_maximum: None,
+            maximum_packet_size: None,
+            topic_alias_maximum: None,
+            request_response_information: None,
+            request_problem_information: None,
+            user_properties: None,
+            authentication_method: None,
+            authentication_data: None,
         })
     }
 }

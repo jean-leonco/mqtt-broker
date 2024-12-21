@@ -1,6 +1,7 @@
 {
   "words": [
     "connack",
+    "dashmap",
     "mqtt",
     "pingreq",
     "pingresp",
@@ -8,7 +9,9 @@
     "pubcomp",
     "pubrec",
     "pubrel",
+    "recv",
     "suback",
+    "tokio",
     "unsuback"
   ],
   "useGitignore": true,

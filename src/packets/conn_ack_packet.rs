@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::codec::{encode_utf8_string, encode_utf8_string_pair, encode_variable_byte_int};
-use crate::connection::PacketError;
-use crate::constants::{CONNACK_IDENTIFIER, MAX_PACKET_SIZE};
+use bytes::{BufMut, Bytes, BytesMut};
+
+use crate::codec::{
+    encode_variable_byte_int, write_usize_as_var_int, write_utf8_string, write_utf8_string_pair,
+};
+use crate::constants::{CONNACK_PACKET_TYPE, MAX_PACKET_SIZE};
+
+use super::{CommonPacketError, EncodablePacket};
 
 pub const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 pub const RECEIVE_MAXIMUM_IDENTIFIER: u8 = 0x21;
@@ -23,74 +28,71 @@ pub const SERVER_REFERENCE_IDENTIFIER: u8 = 0x1C;
 pub const AUTHENTICATION_METHOD_IDENTIFIER: u8 = 0x15;
 pub const AUTHENTICATION_DATA_IDENTIFIER: u8 = 0x16;
 
-/// Represents the possible reason codes returned when attempting
-/// to connect to an MQTT server. Each variant corresponds to a specific
-/// connection outcome or error.
+/// Represents the possible reason codes returned when attempting to connect to an MQTT server.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) enum ConnectReasonCode {
-    /// Success Connection is accepted.
+    /// Success connection is accepted.
     Success = 0x00,
 
-    /// The Server does not wish to reveal the reason for the failure,
-    /// or none of the other Reason Codes apply.
+    /// The server does not wish to reveal the reason for the failure, or none of the other reason codes apply.
     UnspecifiedError = 0x80,
 
-    /// Data within the CONNECT packet could not be correctly parsed.
+    /// Data within the connect packet could not be correctly parsed.
     MalformedPacket = 0x81,
 
-    /// Data in the CONNECT packet does not conform to this specification.
+    /// Data in the connect packet does not conform to this specification.
     ProtocolError = 0x82,
 
-    /// The CONNECT is valid but is not accepted by this Server.
+    /// The connect is valid but is not accepted by this server.
     ImplementationSpecificError = 0x83,
 
-    /// The Server does not support the version of the MQTT protocol requested by the Client.
+    /// The server does not support the version of the mqtt protocol requested by the client.
     UnsupportedProtocolVersion = 0x84,
 
-    /// The Client Identifier is a valid string but is not allowed by the Server.
+    /// The client identifier is a valid string but is not allowed by the server.
     ClientIdentifierNotValid = 0x85,
 
-    /// The Server does not accept the User Name or Password specified by the Client.
+    /// The server does not accept the user name or password specified by the client.
     BadUserNameOrPassword = 0x86,
 
-    /// The Client is not authorized to connect.
+    /// The client is not authorized to connect.
     NotAuthorized = 0x87,
 
-    /// The MQTT Server is not available.
+    /// The mqtt server is not available.
     ServerUnavailable = 0x88,
 
-    /// The Server is busy. Try again later.
+    /// The server is busy. try again later.
     ServerBusy = 0x89,
 
-    /// This Client has been banned by administrative action. Contact the server administrator.
+    /// This client has been banned by administrative action. contact the server administrator.
     Banned = 0x8A,
 
     /// The authentication method is not supported or does not match the authentication method currently in use.
     BadAuthenticationMethod = 0x8C,
 
-    /// The Will Topic Name is not malformed, but is not accepted by this Server.
+    /// The will topic name is not malformed, but is not accepted by this server.
     TopicNameInvalid = 0x90,
 
-    /// The CONNECT packet exceeded the maximum permissible size.
+    /// The connect packet exceeded the maximum permissible size.
     PacketTooLarge = 0x95,
 
     /// An implementation or administrative imposed limit has been exceeded.
     QuotaExceeded = 0x97,
 
-    /// The Will Payload does not match the specified Payload Format Indicator.
+    /// The will payload does not match the specified payload format indicator.
     PayloadFormatInvalid = 0x99,
 
-    /// The Server does not support retained messages, and Will Retain was set to 1.
+    /// The server does not support retained messages, and will retain was set to 1.
     RetainNotSupported = 0x9A,
 
-    /// The Server does not support the `QoS` set in Will `QoS`.
+    /// The server does not support the `qos` set in will `qos`.
     QosNotSupported = 0x9B,
 
-    /// The Client should temporarily use another server.
+    /// The client should temporarily use another server.
     UseAnotherServer = 0x9C,
 
-    /// The Client should permanently use another server.
+    /// The client should permanently use another server.
     ServerMoved = 0x9D,
 
     /// The connection rate limit has been exceeded.
@@ -98,8 +100,7 @@ pub(crate) enum ConnectReasonCode {
 }
 
 impl ConnectReasonCode {
-    /// Converts the `ConnectReasonCode` to its numeric value.
-    pub fn to_u8(self) -> u8 {
+    fn to_u8(self) -> u8 {
         self as u8
     }
 }
@@ -139,15 +140,148 @@ impl fmt::Display for ConnectReasonCode {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct ConnAckPacket {
-    /// The Session Present flag informs the Client whether the Server is using Session State from a previous connection for this `ClientID`.
-    ///
-    /// If a Server sends a CONNACK packet containing a non-zero Reason Code it MUST set Session Present to 0.
+    /// It informs the client whether the server is using session state from a previous connection for this client id.
+    /// If a server sends a connack packet containing a non-zero reason code it must set session present to 0.
     session_present: bool,
 
-    /// If a well formed CONNECT packet is received by the Server, but the Server is unable to complete the Connection the Server MAY send a CONNACK packet containing the appropriate Connect Reason code. If a Server sends a CONNACK packet containing a Reason code of 128 or greater it MUST then close the Network Connection.
+    /// If a well formed CONNECT packet is received by the server, but the server is unable to complete the connection the server may send a CONNACK packet containing the appropriate Connect Reason code.
     reason_code: ConnectReasonCode,
 
-    /// Session Expiry Interval in seconds.
+    /// Connection acknowledgment properties.
+    properties: ConnAckPacketProperties,
+}
+
+#[derive(Debug)]
+pub(crate) enum ConnAckPacketEncodeError {
+    Common(CommonPacketError),
+}
+
+impl std::error::Error for ConnAckPacketEncodeError {}
+
+impl fmt::Display for ConnAckPacketEncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Common(e) => write!(f, "Common Error: {e}"),
+        }
+    }
+}
+
+impl EncodablePacket for ConnAckPacket {
+    type Error = ConnAckPacketEncodeError;
+
+    fn encode(&self) -> Result<bytes::BytesMut, Self::Error> {
+        let mut properties_buf = BytesMut::new();
+        self.properties.write_properties(&mut properties_buf)?;
+
+        let properties_len = encode_variable_byte_int(
+            u32::try_from(properties_buf.len())
+                .map_err(|_| Self::Error::Common(CommonPacketError::IntOverflow))?,
+        );
+
+        let mut buf = BytesMut::new();
+
+        // Fixed header
+        buf.put_u8(CONNACK_PACKET_TYPE << 4);
+
+        // Remaining length: acknowledge flags + reason code + properties len + properties
+        let remaining_len = 2 + properties_len.len() + properties_buf.len();
+        write_usize_as_var_int(&mut buf, remaining_len).map_err(Self::Error::Common)?;
+
+        // Reason code
+        buf.put_u8(self.reason_code.to_u8());
+
+        // Acknowledge flags
+        buf.put_u8(self.session_present.into());
+
+        // Properties
+        buf.put(&properties_len[..]);
+        buf.put(properties_buf);
+
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Self::Error::Common(CommonPacketError::PacketTooLarge(None)));
+        }
+
+        Ok(buf)
+    }
+}
+
+impl ConnAckPacket {
+    pub(crate) fn builder() -> ConnAckPacketBuilder<NeedsSessionPresent> {
+        ConnAckPacketBuilder(NeedsSessionPresent(()))
+    }
+}
+
+pub struct ConnAckPacketBuilder<State>(State);
+
+pub struct NeedsSessionPresent(());
+
+pub struct NeedsReasonCode {
+    session_present: bool,
+}
+
+pub struct ReadyToBuild {
+    session_present: bool,
+    reason_code: ConnectReasonCode,
+    reason_string: Option<String>,
+}
+
+impl ConnAckPacketBuilder<NeedsSessionPresent> {
+    pub(crate) fn session_present(
+        self,
+        session_present: bool,
+    ) -> ConnAckPacketBuilder<NeedsReasonCode> {
+        ConnAckPacketBuilder(NeedsReasonCode { session_present })
+    }
+}
+
+impl ConnAckPacketBuilder<NeedsReasonCode> {
+    pub(crate) fn reason_code(
+        self,
+        reason_code: ConnectReasonCode,
+    ) -> ConnAckPacketBuilder<ReadyToBuild> {
+        ConnAckPacketBuilder(ReadyToBuild {
+            session_present: self.0.session_present,
+            reason_code,
+            reason_string: None,
+        })
+    }
+}
+
+impl ConnAckPacketBuilder<ReadyToBuild> {
+    //pub(crate) fn reason_string(self, reason_string: String) -> ConnAckPacketBuilder<ReadyToBuild> {
+    //    ConnAckPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
+    //}
+
+    pub(crate) fn build(self) -> ConnAckPacket {
+        ConnAckPacket {
+            session_present: self.0.session_present,
+            reason_code: self.0.reason_code,
+            properties: ConnAckPacketProperties {
+                session_expiry_interval: None,
+                receive_maximum: None,
+                maximum_qos: None,
+                retain_available: None,
+                maximum_packet_size: None,
+                assigned_client_identifier: None,
+                topic_alias_maximum: Some(u16::MAX),
+                reason_string: self.0.reason_string,
+                user_properties: None,
+                wildcard_subscription_available: None,
+                subscription_identifiers_available: None,
+                shared_subscription_available: None,
+                server_keep_alive: None,
+                response_information: None,
+                server_reference: None,
+                authentication_method: None,
+                authentication_data: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConnAckPacketProperties {
+    /// Session expiry interval in seconds.
     session_expiry_interval: Option<u32>,
 
     /// The Server uses this value to limit the number of `QoS` 1 and `QoS` 2 publications that it is willing to process concurrently for the Client. It does not provide a mechanism to limit the `QoS` 0 publications that the Client might try to send.
@@ -156,10 +290,10 @@ pub(crate) struct ConnAckPacket {
     /// If a Server does not support `QoS` 1 or `QoS` 2 PUBLISH packets it MUST send a Maximum `QoS` in the CONNACK packet specifying the highest `QoS` it supports.
     maximum_qos: Option<u8>,
 
-    /// If present, this byte declares whether the Server supports retained messages. A value of 0 means that retained messages are not supported. A value of 1 means retained messages are supported. If not present, then retained messages are supported.
+    /// It declares whether the Server supports retained messages. If not present, then retained messages are supported.
     retain_available: Option<bool>,
 
-    /// The Maximum Packet Size the Server is willing to accept. If the Maximum Packet Size is not present, there is no limit on the packet size imposed beyond the limitations in the protocol as a result of the remaining length encoding and the protocol header sizes.
+    /// The Maximum Packet Size the Server is willing to accept. If the Maximum Packet Size is not present, there is no limit on the packet size imposed beyond the limitations in the protocol.
     maximum_packet_size: Option<u32>,
 
     /// The Client Identifier which was assigned by the Server because a zero length Client Identifier was found in the CONNECT packet.
@@ -198,267 +332,102 @@ pub(crate) struct ConnAckPacket {
     authentication_method: Option<String>,
 
     /// The contents of this data are defined by the authentication method.
-    authentication_data: Option<Vec<u8>>,
-
-    remaining_len: usize,
+    authentication_data: Option<Bytes>,
 }
 
-#[derive(Debug)]
-pub(crate) enum EncodeError {
-    PacketError(PacketError),
-}
-
-impl fmt::Display for EncodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PacketError(packet_error) => write!(f, "Packet Error: {packet_error}"),
-        }
-    }
-}
-
-pub struct ConnAckPacketBuilder<State>(State);
-
-pub struct NeedsSessionPresent(());
-
-pub struct NeedsReasonCode {
-    session_present: bool,
-}
-
-pub struct ReadyToBuild {
-    session_present: bool,
-    reason_code: ConnectReasonCode,
-    reason_string: Option<String>,
-}
-
-impl ConnAckPacketBuilder<NeedsSessionPresent> {
-    pub fn session_present(self, session_present: bool) -> ConnAckPacketBuilder<NeedsReasonCode> {
-        ConnAckPacketBuilder(NeedsReasonCode { session_present })
-    }
-}
-
-impl ConnAckPacketBuilder<NeedsReasonCode> {
-    pub fn reason_code(self, reason_code: ConnectReasonCode) -> ConnAckPacketBuilder<ReadyToBuild> {
-        ConnAckPacketBuilder(ReadyToBuild {
-            session_present: self.0.session_present,
-            reason_code,
-            reason_string: None,
-        })
-    }
-}
-
-impl ConnAckPacketBuilder<ReadyToBuild> {
-    //pub fn reason_string(self, reason_string: String) -> ConnAckPacketBuilder<ReadyToBuild> {
-    //    ConnAckPacketBuilder(ReadyToBuild { reason_string: Some(reason_string), ..self.0 })
-    //}
-
-    pub fn build(self) -> ConnAckPacket {
-        ConnAckPacket {
-            session_present: self.0.session_present,
-            reason_code: self.0.reason_code,
-            session_expiry_interval: None,
-            receive_maximum: None,
-            maximum_qos: None,
-            retain_available: None,
-            maximum_packet_size: None,
-            assigned_client_identifier: None,
-            topic_alias_maximum: Some(u16::MAX),
-            reason_string: self.0.reason_string,
-            user_properties: None,
-            wildcard_subscription_available: None,
-            subscription_identifiers_available: None,
-            shared_subscription_available: None,
-            server_keep_alive: None,
-            response_information: None,
-            server_reference: None,
-            authentication_method: None,
-            authentication_data: None,
-            remaining_len: 0,
-        }
-    }
-}
-
-impl ConnAckPacket {
-    pub fn builder() -> ConnAckPacketBuilder<NeedsSessionPresent> {
-        ConnAckPacketBuilder(NeedsSessionPresent(()))
-    }
-
-    /// Encode the fixed header for the control packet.
-    ///
-    /// The MQTT fixed header is composed of:
-    /// - The control byte (the packet type and flags)
-    /// - The remaining length (variable-length integer)
-    ///
-    /// # Fixed Header Format
-    ///
-    /// | Bit       | 7   | 6   | 5   | 4   | 3   | 2   | 1   | 0   |
-    /// |-----------|-----|-----|-----|-----|-----|-----|-----|-----|
-    /// | Byte 1    | Packet type           | Packet flags          |
-    /// | Byte 2    | Remaining Length                              |
-    fn encode_fixed_header(&self) -> Result<Vec<u8>, EncodeError> {
-        let remaining_len = u32::try_from(self.remaining_len)
-            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
-        let encoded_remaining_len = encode_variable_byte_int(remaining_len);
-
-        // Allocate enough space for the control packet type, flags and remaining length
-        let mut header = Vec::with_capacity(1 + encoded_remaining_len.len());
-
-        // Append the control packet, flags and remaining length to fixed header
-        header.push(CONNACK_IDENTIFIER << 4);
-        header.extend(encoded_remaining_len);
-
-        Ok(header)
-    }
-
-    pub fn encode(&mut self) -> Result<Vec<u8>, EncodeError> {
-        let mut properties = Vec::new();
-
-        // Add Session Expiry Interval if present
+impl ConnAckPacketProperties {
+    fn write_properties(&self, buf: &mut BytesMut) -> Result<(), ConnAckPacketEncodeError> {
         if let Some(session_expiry_interval) = self.session_expiry_interval {
-            properties.push(SESSION_EXPIRY_INTERVAL_IDENTIFIER);
-            properties.extend(session_expiry_interval.to_be_bytes());
+            buf.put_u8(SESSION_EXPIRY_INTERVAL_IDENTIFIER);
+            buf.put_u32(session_expiry_interval);
         }
 
-        // Add Receive Maximum if present
         if let Some(receive_maximum) = self.receive_maximum {
-            properties.push(RECEIVE_MAXIMUM_IDENTIFIER);
-            properties.extend(receive_maximum.to_be_bytes());
+            buf.put_u8(RECEIVE_MAXIMUM_IDENTIFIER);
+            buf.put_u16(receive_maximum);
         }
 
-        // Add Maximum QoS if present
         if let Some(maximum_qos) = self.maximum_qos {
-            properties.push(MAXIMUM_QOS_IDENTIFIER);
-            properties.push(maximum_qos);
+            buf.put_u8(MAXIMUM_QOS_IDENTIFIER);
+            buf.put_u8(maximum_qos);
         }
 
-        // Add Retain available if present
         if let Some(retain_available) = self.retain_available {
-            let retain_available = u8::from(retain_available);
-
-            properties.push(RETAIN_AVAILABLE_IDENTIFIER);
-            properties.push(retain_available);
+            buf.put_u8(RETAIN_AVAILABLE_IDENTIFIER);
+            buf.put_u8(retain_available.into());
         }
 
-        // Add Maximum Packet Size if present
         if let Some(maximum_packet_size) = self.maximum_packet_size {
-            properties.push(MAXIMUM_PACKET_SIZE_IDENTIFIER);
-            properties.extend(maximum_packet_size.to_be_bytes());
+            buf.put_u8(MAXIMUM_PACKET_SIZE_IDENTIFIER);
+            buf.put_u32(maximum_packet_size);
         }
 
-        // Add Assigned Client Identifier if present
         if let Some(assigned_client_identifier) = &self.assigned_client_identifier {
-            properties.push(ASSIGNED_CLIENT_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(assigned_client_identifier).map_err(EncodeError::PacketError)?,
-            );
+            buf.put_u8(ASSIGNED_CLIENT_IDENTIFIER);
+            write_utf8_string(buf, assigned_client_identifier)
+                .map_err(ConnAckPacketEncodeError::Common)?;
         }
 
-        // Add Topic Alias Maximum if present
-        if let Some(topic_alias_maximum) = &self.topic_alias_maximum {
-            properties.push(TOPIC_ALIAS_MAXIMUM_IDENTIFIER);
-            properties.extend(topic_alias_maximum.to_be_bytes());
+        if let Some(topic_alias_maximum) = self.topic_alias_maximum {
+            buf.put_u8(TOPIC_ALIAS_MAXIMUM_IDENTIFIER);
+            buf.put_u16(topic_alias_maximum);
         }
 
-        // Add Reason String if present
         if let Some(reason_string) = &self.reason_string {
-            properties.push(REASON_STRING_IDENTIFIER);
-            properties.extend(encode_utf8_string(reason_string).map_err(EncodeError::PacketError)?);
+            buf.put_u8(REASON_STRING_IDENTIFIER);
+            write_utf8_string(buf, reason_string).map_err(ConnAckPacketEncodeError::Common)?;
         }
 
-        // Add User Properties if present
         if let Some(user_properties) = &self.user_properties {
             for user_property in user_properties {
-                properties.push(USER_PROPERTY_IDENTIFIER);
-                properties.extend(
-                    encode_utf8_string_pair(user_property).map_err(EncodeError::PacketError)?,
-                );
+                buf.put_u8(USER_PROPERTY_IDENTIFIER);
+                write_utf8_string_pair(buf, user_property)
+                    .map_err(ConnAckPacketEncodeError::Common)?;
             }
         }
 
-        // Add Wildcard Subscription Available if present
         if let Some(wildcard_subscription_available) = self.wildcard_subscription_available {
-            let wildcard_subscription_available = u8::from(wildcard_subscription_available);
-
-            properties.push(WILDCARD_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
-            properties.push(wildcard_subscription_available);
+            buf.put_u8(WILDCARD_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
+            buf.put_u8(wildcard_subscription_available.into());
         }
 
-        // Add Subscription Identifiers Available if present
         if let Some(subscription_identifiers_available) = self.subscription_identifiers_available {
-            let subscription_identifiers_available = u8::from(subscription_identifiers_available);
-
-            properties.push(SUBSCRIPTION_IDENTIFIERS_AVAILABLE_IDENTIFIER);
-            properties.push(subscription_identifiers_available);
+            buf.put_u8(SUBSCRIPTION_IDENTIFIERS_AVAILABLE_IDENTIFIER);
+            buf.put_u8(subscription_identifiers_available.into());
         }
 
-        // Add Shared Subscription Available if present
         if let Some(shared_subscription_available) = self.shared_subscription_available {
-            let shared_subscription_available = u8::from(shared_subscription_available);
-
-            properties.push(SHARED_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
-            properties.push(shared_subscription_available);
+            buf.put_u8(SHARED_SUBSCRIPTION_AVAILABLE_IDENTIFIER);
+            buf.put_u8(shared_subscription_available.into());
         }
 
-        // Add Server Keep Alive if present
         if let Some(server_keep_alive) = self.server_keep_alive {
-            properties.push(SERVER_KEEP_ALIVE_IDENTIFIER);
-            properties.extend(server_keep_alive.to_be_bytes());
+            buf.put_u8(SERVER_KEEP_ALIVE_IDENTIFIER);
+            buf.put_u16(server_keep_alive);
         }
 
-        // Add Response Information if present
         if let Some(response_information) = &self.response_information {
-            properties.push(RESPONSE_INFORMATION_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(response_information).map_err(EncodeError::PacketError)?,
-            );
+            buf.put_u8(RESPONSE_INFORMATION_IDENTIFIER);
+            write_utf8_string(buf, response_information)
+                .map_err(ConnAckPacketEncodeError::Common)?;
         }
 
-        // Add Server Reference if present
         if let Some(server_reference) = &self.server_reference {
-            properties.push(SERVER_REFERENCE_IDENTIFIER);
-            properties
-                .extend(encode_utf8_string(server_reference).map_err(EncodeError::PacketError)?);
+            buf.put_u8(SERVER_REFERENCE_IDENTIFIER);
+            write_utf8_string(buf, server_reference).map_err(ConnAckPacketEncodeError::Common)?;
         }
 
-        // Add Authentication Method if present
         if let Some(authentication_method) = &self.authentication_method {
-            properties.push(AUTHENTICATION_METHOD_IDENTIFIER);
-            properties.extend(
-                encode_utf8_string(authentication_method).map_err(EncodeError::PacketError)?,
-            );
+            buf.put_u8(AUTHENTICATION_METHOD_IDENTIFIER);
+            write_utf8_string(buf, authentication_method)
+                .map_err(ConnAckPacketEncodeError::Common)?;
         }
 
-        // Add Authentication Data if present
         if let Some(authentication_data) = &self.authentication_data {
-            properties.push(AUTHENTICATION_DATA_IDENTIFIER);
-            properties.extend(authentication_data);
+            buf.put_u8(AUTHENTICATION_DATA_IDENTIFIER);
+            buf.put(&authentication_data[..]);
         }
 
-        let properties_len = u32::try_from(properties.len())
-            .map_err(|_| EncodeError::PacketError(PacketError::PacketTooLarge))?;
-        let properties_len = encode_variable_byte_int(properties_len);
-
-        // Remaining Length: Acknowledge Flags + Reason Code + Property length + Properties
-        self.remaining_len += 1 + 1 + properties_len.len() + properties.len();
-
-        let fixed_header = self.encode_fixed_header()?;
-
-        // Byte 1 is the "Connect Acknowledge Flags". Bits 7-1 are reserved and MUST be set to 0
-        // Bit 0 is the Session Present Flag.
-        let acknowledge_flags = u8::from(self.session_present);
-
-        // Build packet: Fixed header + Acknowledge Flags + Reason Code + Property length + Properties
-        let mut packet = Vec::with_capacity(fixed_header.len() + self.remaining_len);
-        packet.extend(fixed_header);
-        packet.push(acknowledge_flags);
-        packet.push(self.reason_code.to_u8());
-        packet.extend(properties_len);
-        packet.extend(properties);
-
-        // Ensure the packet isn't larger than the MAX_PACKET_SIZE
-        if packet.len() > MAX_PACKET_SIZE {
-            return Err(EncodeError::PacketError(PacketError::PacketTooLarge));
-        }
-
-        Ok(packet)
+        Ok(())
     }
 }
