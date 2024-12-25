@@ -7,6 +7,7 @@ pub(crate) mod connect_packet;
 pub(crate) mod disconnect_packet;
 pub(crate) mod ping_req_packet;
 pub(crate) mod ping_resp_packet;
+pub(crate) mod publish_packet;
 pub(crate) mod subscribe_packet;
 
 pub(crate) trait DecodablePacket: Sized {
@@ -16,7 +17,11 @@ pub(crate) trait DecodablePacket: Sized {
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error>;
 
-    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error>;
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        fixed_header: u8,
+        remaining_len: usize,
+    ) -> Result<Self, Self::Error>;
 }
 
 pub(crate) trait EncodablePacket: Sized {

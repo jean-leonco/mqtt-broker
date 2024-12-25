@@ -8,13 +8,13 @@ use crate::packets::CommonPacketError;
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901011>
 pub(crate) fn decode_variable_byte_int(
-    buf: &mut Cursor<&[u8]>,
+    cursor: &mut Cursor<&[u8]>,
 ) -> Result<usize, CommonPacketError> {
     let mut multiplier = 1;
     let mut decoded_value = 0;
 
     loop {
-        let encoded_byte = buf.get_u8();
+        let encoded_byte = cursor.get_u8();
 
         // Take the 7 least significant bits
         let value = (encoded_byte & 127) as usize;
@@ -41,13 +41,13 @@ pub(crate) fn decode_variable_byte_int(
 /// Decode a UTF-8 string.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901010>
-pub(crate) fn decode_utf8_string(buf: &mut Cursor<&[u8]>) -> Result<String, CommonPacketError> {
+pub(crate) fn decode_utf8_string(cursor: &mut Cursor<&[u8]>) -> Result<String, CommonPacketError> {
     // Read the length of the string
-    let len = buf.get_u16() as usize;
+    let len = cursor.get_u16() as usize;
 
     // Read the string data
     let mut encoded_value = vec![0; len];
-    if std::io::Read::read_exact(buf, &mut encoded_value).is_err() {
+    if std::io::Read::read_exact(cursor, &mut encoded_value).is_err() {
         return Err(CommonPacketError::UnexpectedError);
     }
 
@@ -61,13 +61,15 @@ pub(crate) fn decode_utf8_string(buf: &mut Cursor<&[u8]>) -> Result<String, Comm
 /// Decode a binary buf.
 ///
 /// Reference: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901012>
-pub(crate) fn decode_binary_data(buf: &mut Cursor<&[u8]>) -> Result<BytesMut, CommonPacketError> {
+pub(crate) fn decode_binary_data(
+    cursor: &mut Cursor<&[u8]>,
+) -> Result<BytesMut, CommonPacketError> {
     // Read the length of the binary data
-    let len = buf.get_u16() as usize;
+    let len = cursor.get_u16() as usize;
 
     // Read the binary data
     let mut decoded_value = BytesMut::with_capacity(len);
-    match std::io::Read::read_exact(buf, &mut decoded_value) {
+    match std::io::Read::read_exact(cursor, &mut decoded_value) {
         Ok(()) => Ok(decoded_value),
         Err(_) => Err(CommonPacketError::UnexpectedError),
     }

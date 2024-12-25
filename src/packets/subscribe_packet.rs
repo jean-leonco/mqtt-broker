@@ -87,7 +87,11 @@ impl DecodablePacket for SubscribePacket {
         Ok(())
     }
 
-    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        _fixed_header: u8,
+        _remaining_len: usize,
+    ) -> Result<Self, Self::Error> {
         let packet_id = cursor.get_u16();
 
         let properties_len = decode_variable_byte_int(cursor).map_err(Self::Error::Common)?;

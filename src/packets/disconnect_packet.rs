@@ -267,7 +267,11 @@ impl DecodablePacket for DisconnectPacket {
         Ok(())
     }
 
-    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        _fixed_header: u8,
+        _remaining_len: usize,
+    ) -> Result<Self, Self::Error> {
         //  if the remaining length is less than 1, normal disconnection can be assumed
         if cursor.remaining() == 0 {
             return Ok(Self {

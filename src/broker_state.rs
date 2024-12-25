@@ -1,12 +1,13 @@
 use std::{collections::HashSet, sync::Arc};
 
+use bytes::BytesMut;
 use dashmap::DashMap;
 use log::{debug, error};
 use tokio::{sync::mpsc, time::Instant};
 
 #[derive(Debug)]
 pub(crate) enum BrokerEvent {
-    Publish,
+    Publish(Option<BytesMut>),
 }
 
 #[derive(Debug)]
@@ -63,12 +64,14 @@ impl BrokerState {
         }
     }
 
-    pub(crate) fn publish(&self, topic_name: &str) {
+    pub(crate) fn publish(&self, topic: &str, payload: Option<BytesMut>) {
         for entry in self.sessions.iter() {
-            if entry.subscriptions.contains(topic_name) {
+            if entry.subscriptions.contains(topic) {
                 let tx = entry.tx.clone();
+                let payload = payload.clone();
+
                 tokio::spawn(async move {
-                    if let Err(e) = tx.send(BrokerEvent::Publish).await {
+                    if let Err(e) = tx.send(BrokerEvent::Publish(payload)).await {
                         error!("Failed to send publish event: {:?}", e);
                     }
                 });

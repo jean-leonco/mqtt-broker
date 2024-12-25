@@ -107,7 +107,7 @@ impl Connection {
 
         let start = cursor.position() as usize;
 
-        match P::decode(&mut cursor) {
+        match P::decode(&mut cursor, fixed_header, remaining_len) {
             Ok(packet) => {
                 self.buffer.advance(start + remaining_len);
                 Ok(Some(packet))

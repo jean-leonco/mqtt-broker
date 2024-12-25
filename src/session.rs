@@ -13,6 +13,7 @@ use crate::{
         disconnect_packet::{DisconnectPacket, DisconnectReasonCode},
         ping_req_packet::PingReqPacket,
         ping_resp_packet::PingRespPacket,
+        publish_packet::PublishPacket,
         subscribe_packet::SubscribePacket,
         CommonPacketError,
     },
@@ -164,7 +165,9 @@ impl Session {
                 }
 
                 PUBLISH_PACKET_TYPE => {
-                    self.broker_state.publish("some/topic");
+                    let publish = self.connection.read_packet::<PublishPacket>().await?.unwrap();
+                    self.broker_state.publish(&publish.topic, publish.payload);
+
                     trace!("Client {} published message", self.client_id);
                 }
 

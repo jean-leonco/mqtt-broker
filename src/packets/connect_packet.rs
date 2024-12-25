@@ -101,7 +101,11 @@ impl DecodablePacket for ConnectPacket {
         Ok(())
     }
 
-    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+    fn decode(
+        cursor: &mut Cursor<&[u8]>,
+        _fixed_header: u8,
+        _remaining_len: usize,
+    ) -> Result<Self, Self::Error> {
         let protocol_name = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
         if protocol_name != PROTOCOL_NAME {
             let e = Some(format!("Unsupported protocol name: {protocol_name}"));

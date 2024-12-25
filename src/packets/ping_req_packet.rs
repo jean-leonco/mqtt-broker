@@ -49,7 +49,11 @@ impl DecodablePacket for PingReqPacket {
         Ok(())
     }
 
-    fn decode(_cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, Self::Error> {
+    fn decode(
+        _cursor: &mut std::io::Cursor<&[u8]>,
+        _fixed_header: u8,
+        _remaining_len: usize,
+    ) -> Result<Self, Self::Error> {
         Ok(Self {})
     }
 }
