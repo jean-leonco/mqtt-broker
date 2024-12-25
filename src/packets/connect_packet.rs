@@ -163,7 +163,7 @@ impl DecodablePacket for ConnectPacket {
 
         let properties_len = decode_variable_byte_int(cursor).map_err(Self::Error::Common)?;
 
-        let properties = ConnectPacketProperties::decode(cursor, properties_len)?;
+        let properties = ConnectPacketProperties::decode(cursor, properties_len);
 
         let client_id = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
 
@@ -171,7 +171,7 @@ impl DecodablePacket for ConnectPacket {
             || client_id.len() > 23
             || !client_id.chars().all(char::is_alphanumeric)
         {
-            let e = Some(format!("Client identifier is not valid"));
+            let e = Some("Client identifier is not valid".to_string());
             return Err(Self::Error::ClientIdentifierNotValid(e));
         }
 
@@ -249,15 +249,12 @@ pub(crate) struct ConnectPacketProperties {
 }
 
 impl ConnectPacketProperties {
-    fn decode(
-        cursor: &mut Cursor<&[u8]>,
-        len: usize,
-    ) -> Result<ConnectPacketProperties, ConnectPacketDecodeError> {
+    fn decode(cursor: &mut Cursor<&[u8]>, len: usize) -> ConnectPacketProperties {
         if len > 0 {
             cursor.advance(len);
         }
 
-        Ok(ConnectPacketProperties {
+        ConnectPacketProperties {
             session_expiry_interval: None,
             receive_maximum: None,
             maximum_packet_size: None,
@@ -267,6 +264,6 @@ impl ConnectPacketProperties {
             user_properties: None,
             authentication_method: None,
             authentication_data: None,
-        })
+        }
     }
 }

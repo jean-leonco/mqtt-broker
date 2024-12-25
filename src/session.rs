@@ -121,7 +121,7 @@ impl Session {
                 },
 
                 // Handle keep-alive timeout
-                _ = tokio::time::sleep_until(deadline) => {
+                () = tokio::time::sleep_until(deadline) => {
                     warn!("Keep-alive timeout for client {}", self.client_id);
                     return Ok(());
                 }

@@ -297,7 +297,7 @@ impl DecodablePacket for DisconnectPacket {
 
         let properties_len = decode_variable_byte_int(cursor).map_err(Self::Error::Common)?;
 
-        let properties = DisconnectPacketProperties::decode(cursor, properties_len)?;
+        let properties = DisconnectPacketProperties::decode(cursor, properties_len);
 
         Ok(Self { reason_code, properties })
     }
@@ -416,20 +416,17 @@ pub(crate) struct DisconnectPacketProperties {
 }
 
 impl DisconnectPacketProperties {
-    fn decode(
-        cursor: &mut Cursor<&[u8]>,
-        len: usize,
-    ) -> Result<DisconnectPacketProperties, DisconnectPacketDecodeError> {
+    fn decode(cursor: &mut Cursor<&[u8]>, len: usize) -> DisconnectPacketProperties {
         if len > 0 {
             cursor.advance(len);
         }
 
-        Ok(DisconnectPacketProperties {
+        DisconnectPacketProperties {
             session_expiry_interval: None,
             reason_string: None,
             user_properties: None,
             server_reference: None,
-        })
+        }
     }
 
     fn write_properties(

@@ -82,11 +82,11 @@ impl Connection {
     }
 
     fn peek_fixed_header(&self) -> Option<u8> {
-        if self.buffer.is_empty() || self.buffer.len() < 1 {
+        if self.buffer.is_empty() || self.buffer.is_empty() {
             return None;
         }
 
-        return Some(self.buffer.chunk()[0]);
+        Some(self.buffer.chunk()[0])
     }
 
     fn decode_packet<P: Packet + DecodablePacket>(&mut self) -> Result<Option<P>, ConnectionError> {

@@ -115,7 +115,7 @@ impl EncodablePacket for PublishPacket {
 
         // payload
         if let Some(payload) = &self.payload {
-            buf.put(&payload[..])
+            buf.put(&payload[..]);
         }
 
         if buf.len() > MAX_PACKET_SIZE {
