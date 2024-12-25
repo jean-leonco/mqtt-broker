@@ -28,7 +28,8 @@ def on_connect(
         ),
     )
 
-    client.publish("some/topic", "data")
+    for _ in range(0, 1001):
+        client.publish("some/topic", "data")
 
 
 # The callback for when a PUBLISH message is received from the server.

@@ -31,7 +31,6 @@ pub(crate) struct Session {
     broker_state: BrokerState,
     client_id: String,
     keep_alive: Duration,
-    expiry_interval: Option<Duration>,
     last_activity: Instant,
 }
 
@@ -47,18 +46,20 @@ impl Session {
             .await?
             .ok_or(ConnectionError::Common(CommonPacketError::ProtocolError(None)))?;
 
-        let (session_present, rx) =
-            broker_state.save_session(connect.client_id.clone(), connect.clean_start);
+        let expiry_interval = connect
+            .properties
+            .session_expiry_interval
+            .map(|expiry_interval| Duration::from_secs(u64::from(expiry_interval)));
+        let (session_present, rx) = broker_state.register_session(
+            connect.client_id.clone(),
+            connect.clean_start,
+            expiry_interval,
+        );
 
         info!("Client {} connected with clean_start={}", connect.client_id, connect.clean_start);
         debug!("Session present: {}", session_present);
 
         let keep_alive = Duration::from_secs(u64::from(connect.keep_alive));
-
-        let expiry_interval = connect
-            .properties
-            .session_expiry_interval
-            .map(|expiry_interval| Duration::from_secs(u64::from(expiry_interval)));
 
         debug!(
             "Client settings - keep_alive: {:?}, expiry_interval: {:?}",
@@ -70,7 +71,6 @@ impl Session {
             broker_state,
             client_id: connect.client_id,
             keep_alive,
-            expiry_interval,
             last_activity: Instant::now(),
         };
 
@@ -83,7 +83,7 @@ impl Session {
         debug!("Sent CONNACK to client {}", session.client_id);
 
         if let Err(e) = session.run(rx).await {
-            session.discard_session();
+            session.broker_state.discard_session(&session.client_id);
             error!("Session for client {} ended with error: {:?}", session.client_id, e);
             return Err(e);
         }
@@ -175,12 +175,7 @@ impl Session {
 
                 PUBLISH_PACKET_TYPE => {
                     let publish = self.connection.read_packet::<PublishPacket>().await?.unwrap();
-                    self.broker_state.publish(&publish.topic, publish.payload.clone());
-
-                    debug!(
-                        "Client {} published message topic {}: {:?}",
-                        self.client_id, publish.topic, publish.payload
-                    );
+                    self.broker_state.publish(publish.topic, publish.payload).await.unwrap();
                 }
 
                 PINGREQ_PACKET_TYPE => {
@@ -240,13 +235,5 @@ impl Session {
         };
 
         Ok(false)
-    }
-
-    fn discard_session(&mut self) {
-        if let Some(expiry_interval) = self.expiry_interval {
-            self.broker_state
-                .schedule_discard_session(&self.client_id, Instant::now() + expiry_interval);
-        }
-        info!("Discarding session for client {}", self.client_id);
     }
 }

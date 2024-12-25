@@ -1,7 +1,6 @@
 use std::{fmt, io::Cursor};
 
 use bytes::Buf;
-use log::debug;
 
 use crate::{
     codec::{decode_utf8_string, decode_variable_byte_int},
@@ -104,7 +103,6 @@ impl DecodablePacket for SubscribePacket {
             let topic = decode_utf8_string(cursor).map_err(Self::Error::Common)?;
 
             let subscription_options = cursor.get_u8();
-            debug!("{:08b}", subscription_options);
 
             //  It is a protocol error if the maximum QoS field has the value 3
             let qos_level = subscription_options & 0b0000_0011;
