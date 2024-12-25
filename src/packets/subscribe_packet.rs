@@ -8,7 +8,7 @@ use crate::{
     constants::SUBSCRIBE_PACKET_TYPE,
 };
 
-use super::{CommonPacketError, DecodablePacket};
+use super::{CommonPacketError, DecodablePacket, Packet};
 
 #[derive(Debug)]
 pub(crate) enum RetainHandling {
@@ -60,12 +60,14 @@ impl fmt::Display for SubscribePacketDecodeError {
     }
 }
 
-impl DecodablePacket for SubscribePacket {
-    type Error = SubscribePacketDecodeError;
-
+impl Packet for SubscribePacket {
     fn packet_type() -> u8 {
         SUBSCRIBE_PACKET_TYPE
     }
+}
+
+impl DecodablePacket for SubscribePacket {
+    type Error = SubscribePacketDecodeError;
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
         let packet_type = fixed_header >> 4;

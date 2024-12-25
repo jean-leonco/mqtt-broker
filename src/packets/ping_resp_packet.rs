@@ -4,7 +4,7 @@ use bytes::BytesMut;
 
 use crate::constants::PINGRESP_PACKET_TYPE;
 
-use super::EncodablePacket;
+use super::{EncodablePacket, Packet};
 
 #[derive(Debug)]
 pub(crate) struct PingRespPacket {}
@@ -20,10 +20,16 @@ impl fmt::Display for PingRespPacketEncodeError {
     }
 }
 
+impl Packet for PingRespPacket {
+    fn packet_type() -> u8 {
+        PINGRESP_PACKET_TYPE
+    }
+}
+
 impl EncodablePacket for PingRespPacket {
     type Error = PingRespPacketEncodeError;
 
     fn encode(&self) -> Result<bytes::BytesMut, Self::Error> {
-        Ok(BytesMut::from(&[PINGRESP_PACKET_TYPE << 4, 0][..]))
+        Ok(BytesMut::from(&[Self::packet_type() << 4, 0][..]))
     }
 }

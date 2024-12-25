@@ -9,7 +9,7 @@ use crate::{
     constants::{DISCONNECT_PACKET_TYPE, MAX_PACKET_SIZE},
 };
 
-use super::{CommonPacketError, DecodablePacket, EncodablePacket};
+use super::{CommonPacketError, DecodablePacket, EncodablePacket, Packet};
 
 const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 const REASON_STRING_IDENTIFIER: u8 = 0x1F;
@@ -240,12 +240,14 @@ impl fmt::Display for DisconnectPacketDecodeError {
     }
 }
 
-impl DecodablePacket for DisconnectPacket {
-    type Error = DisconnectPacketDecodeError;
-
+impl Packet for DisconnectPacket {
     fn packet_type() -> u8 {
         DISCONNECT_PACKET_TYPE
     }
+}
+
+impl DecodablePacket for DisconnectPacket {
+    type Error = DisconnectPacketDecodeError;
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
         let packet_type = fixed_header >> 4;
@@ -331,7 +333,7 @@ impl EncodablePacket for DisconnectPacket {
         let mut buf = BytesMut::new();
 
         // Fixed header
-        buf.put_u8(DISCONNECT_PACKET_TYPE << 4);
+        buf.put_u8(Self::packet_type() << 4);
 
         // Remaining length: reason code + properties len + properties
         let remaining_len = 1 + properties_buf.len() + properties_buf.len();

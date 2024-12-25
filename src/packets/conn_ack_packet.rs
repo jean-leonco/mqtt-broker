@@ -8,7 +8,7 @@ use crate::codec::{
 };
 use crate::constants::{CONNACK_PACKET_TYPE, MAX_PACKET_SIZE};
 
-use super::{CommonPacketError, EncodablePacket};
+use super::{CommonPacketError, EncodablePacket, Packet};
 
 pub const SESSION_EXPIRY_INTERVAL_IDENTIFIER: u8 = 0x11;
 pub const RECEIVE_MAXIMUM_IDENTIFIER: u8 = 0x21;
@@ -166,6 +166,12 @@ impl fmt::Display for ConnAckPacketEncodeError {
     }
 }
 
+impl Packet for ConnAckPacket {
+    fn packet_type() -> u8 {
+        CONNACK_PACKET_TYPE
+    }
+}
+
 impl EncodablePacket for ConnAckPacket {
     type Error = ConnAckPacketEncodeError;
 
@@ -181,7 +187,7 @@ impl EncodablePacket for ConnAckPacket {
         let mut buf = BytesMut::new();
 
         // Fixed header
-        buf.put_u8(CONNACK_PACKET_TYPE << 4);
+        buf.put_u8(Self::packet_type() << 4);
 
         // Remaining length: acknowledge flags + reason code + properties len + properties
         let remaining_len = 2 + properties_len.len() + properties_buf.len();

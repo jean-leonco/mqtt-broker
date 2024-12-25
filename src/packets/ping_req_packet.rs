@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::constants::PINGREQ_PACKET_TYPE;
 
-use super::{CommonPacketError, DecodablePacket};
+use super::{CommonPacketError, DecodablePacket, Packet};
 
 #[derive(Debug)]
 pub(crate) struct PingReqPacket {}
@@ -22,12 +22,14 @@ impl fmt::Display for PingReqPacketDecodeError {
     }
 }
 
-impl DecodablePacket for PingReqPacket {
-    type Error = PingReqPacketDecodeError;
-
+impl Packet for PingReqPacket {
     fn packet_type() -> u8 {
         PINGREQ_PACKET_TYPE
     }
+}
+
+impl DecodablePacket for PingReqPacket {
+    type Error = PingReqPacketDecodeError;
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
         let packet_type = fixed_header >> 4;

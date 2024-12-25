@@ -1,13 +1,13 @@
 use std::{collections::HashMap, fmt, io::Cursor};
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 
 use crate::{
     codec::{decode_binary_data, decode_utf8_string, decode_variable_byte_int},
     constants::{CONNECT_PACKET_TYPE, PROTOCOL_NAME, PROTOCOL_VERSION},
 };
 
-use super::{CommonPacketError, DecodablePacket};
+use super::{CommonPacketError, DecodablePacket, Packet};
 
 /// Represents a decoded MQTT CONNECT packet as defined in the MQTT protocol.
 #[derive(Debug)]
@@ -44,7 +44,7 @@ pub(crate) struct ConnectPacket {
     username: Option<String>,
 
     /// Although this field is called Password, it can be used to carry any credential information.
-    password: Option<BytesMut>,
+    password: Option<Bytes>,
 }
 
 #[derive(Debug)]
@@ -74,12 +74,14 @@ impl fmt::Display for ConnectPacketDecodeError {
     }
 }
 
-impl DecodablePacket for ConnectPacket {
-    type Error = ConnectPacketDecodeError;
-
+impl Packet for ConnectPacket {
     fn packet_type() -> u8 {
         CONNECT_PACKET_TYPE
     }
+}
+
+impl DecodablePacket for ConnectPacket {
+    type Error = ConnectPacketDecodeError;
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error> {
         let packet_type = fixed_header >> 4;
@@ -191,7 +193,7 @@ impl DecodablePacket for ConnectPacket {
 
         let password = if password_flag {
             let password = decode_binary_data(cursor).map_err(Self::Error::Common)?;
-            Some(password)
+            Some(password.into())
         } else {
             None
         };

@@ -8,7 +8,7 @@ use tokio::{
 
 use crate::{
     codec::decode_variable_byte_int,
-    packets::{CommonPacketError, DecodablePacket, EncodablePacket},
+    packets::{CommonPacketError, DecodablePacket, EncodablePacket, Packet},
 };
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ impl Connection {
     /// Read a packet from the connection.
     ///
     /// Returns `None` if EOF is reached
-    pub(crate) async fn read_packet<P: DecodablePacket>(
+    pub(crate) async fn read_packet<P: Packet + DecodablePacket>(
         &mut self,
     ) -> Result<Option<P>, ConnectionError> {
         loop {
@@ -89,7 +89,7 @@ impl Connection {
         return Some(self.buffer.chunk()[0]);
     }
 
-    fn decode_packet<P: DecodablePacket>(&mut self) -> Result<Option<P>, ConnectionError> {
+    fn decode_packet<P: Packet + DecodablePacket>(&mut self) -> Result<Option<P>, ConnectionError> {
         if self.buffer.is_empty() || self.buffer.len() < 2 {
             return Ok(None);
         }
@@ -117,7 +117,7 @@ impl Connection {
     }
 
     /// Write a packet to the connection.
-    pub(crate) async fn write_packet<P: EncodablePacket>(
+    pub(crate) async fn write_packet<P: Packet + EncodablePacket>(
         &mut self,
         packet: &P,
     ) -> Result<(), ConnectionError> {

@@ -31,7 +31,6 @@ def on_connect(
     client.publish("some/topic", "data")
 
 
-
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
     print(f"{msg.topic} {str(msg.payload)}")
@@ -50,7 +49,7 @@ def on_disconnect(
 mqttc = mqtt.Client(
     CallbackAPIVersion.VERSION2,
     protocol=MQTTProtocolVersion.MQTTv5,
-    client_id="client001",
+    client_id="1",
 )
 mqttc.username_pw_set(username="username", password="password")
 mqttc.on_connect = on_connect

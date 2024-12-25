@@ -102,9 +102,7 @@ impl Session {
                 // Handle broker events
                 event = rx.recv() => {
                     match event {
-                        Some(event) => {
-                          debug!("Client {} received broker event: {:?}", self.client_id, event);
-                        }
+                        Some(event) => self.handle_broker_event(event).await?,
                         None => {
                             // The channel is closed, session can exit
                             return Ok(());
@@ -113,10 +111,8 @@ impl Session {
                 },
 
                 // Handle incoming packets
-                packet_result = self.handle_incoming_packet() => {
-                    let should_disconnect = packet_result?;
-
-                    if should_disconnect {
+                should_disconnect = self.handle_incoming_packet() => {
+                    if should_disconnect? {
                         info!("Client {} disconnected", self.client_id);
                         return Ok(());
                     }
@@ -131,6 +127,19 @@ impl Session {
                 }
             }
         }
+    }
+
+    async fn handle_broker_event(&mut self, event: BrokerEvent) -> Result<(), ConnectionError> {
+        debug!("Client {} received broker event: {:?}", self.client_id, event);
+
+        match event {
+            BrokerEvent::Publish(topic, payload) => {
+                let publish = PublishPacket::new(topic, payload);
+                self.connection.write_packet(&publish).await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_incoming_packet(&mut self) -> Result<bool, ConnectionError> {
@@ -166,9 +175,12 @@ impl Session {
 
                 PUBLISH_PACKET_TYPE => {
                     let publish = self.connection.read_packet::<PublishPacket>().await?.unwrap();
-                    self.broker_state.publish(&publish.topic, publish.payload);
+                    self.broker_state.publish(&publish.topic, publish.payload.clone());
 
-                    trace!("Client {} published message", self.client_id);
+                    debug!(
+                        "Client {} published message topic {}: {:?}",
+                        self.client_id, publish.topic, publish.payload
+                    );
                 }
 
                 PINGREQ_PACKET_TYPE => {

@@ -10,10 +10,12 @@ pub(crate) mod ping_resp_packet;
 pub(crate) mod publish_packet;
 pub(crate) mod subscribe_packet;
 
+pub(crate) trait Packet: Sized {
+    fn packet_type() -> u8;
+}
+
 pub(crate) trait DecodablePacket: Sized {
     type Error: Error + 'static + Send + Sync;
-
-    fn packet_type() -> u8;
 
     fn validate_header(fixed_header: u8) -> Result<(), Self::Error>;
 
